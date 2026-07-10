@@ -112,6 +112,14 @@
       min-height: 1em;
     }
 
+    .version-line {
+      font-size: 0.58rem;
+      letter-spacing: 0.1em;
+      color: var(--cream-dim);
+      opacity: 0.55;
+      margin-top: 2px;
+    }
+
     /* Controls */
     .controls {
       width: 100%;
@@ -330,6 +338,32 @@
       pointer-events: none;
     }
 
+    .test-btn {
+      width: 100%;
+      padding: 11px;
+      border-radius: 12px;
+      border: 1.5px solid var(--orb-dim);
+      background: transparent;
+      color: var(--cream-dim);
+      font-family: 'Cinzel', serif;
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: background 0.2s, color 0.2s, border-color 0.2s;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .test-btn:not(:disabled):active {
+      background: rgba(240,60,60,0.18);
+      border-color: #e04545;
+      color: #ff8a8a;
+    }
+
+    .test-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
     /* Transport A/B diagnostics strip */
     .transport-strip {
       display: flex;
@@ -392,6 +426,7 @@
     <img src="icon-192.png" class="orb-icon" alt="Orb Lamp">
     <h1>Orb Lamp</h1>
     <div class="status-line" id="statusLine">Not connected</div>
+    <div class="version-line" id="versionLine"></div>
   </header>
 
   <div class="controls">
@@ -409,6 +444,11 @@
     </div>
 
     <button class="connect-btn" id="connectBtn">Connect to Orb</button>
+
+    <!-- Comms self-test: flashes the Puck's RED LED for 0.5s. Works in both
+         transports and proves end-to-end communication independent of the
+         lamp logic. -->
+    <button class="test-btn" id="testBtn" disabled>Flash red LED (comms test)</button>
 
     <div class="controls-inner disabled" id="controlsInner">
 
@@ -472,6 +512,10 @@
 </div>
 
 <script>
+// ── App version ────────────────────────────────────────────────
+// Bump this on every change you want to be able to identify at runtime.
+var APP_VERSION = 'v0.9.0';
+
 // ── BLE UUIDs (Nordic UART) ────────────────────────────────────
 var UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
 var UART_TX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // phone → Puck (write to this)
@@ -564,6 +608,11 @@ var customTransport = {
     var msg = JSON.stringify(obj) + '\n';
     txQueue.push(new TextEncoder().encode(msg));
     pumpQueue();
+  },
+  // Comms test: send the JSON {cmd:'test'} which the firmware handles by
+  // flashing the red LED. Proves the JSON path end to end.
+  flashTest: function() {
+    this.sendCommand({ cmd: 'test' });
   }
 };
 
@@ -612,6 +661,19 @@ var libraryTransport = {
       p.catch(function(e) {
         setStatus('Lib write failed: ' + (e && e.message ? e.message : e));
         console.error('Puck.write rejected:', e);
+      });
+    }
+  },
+  // Comms test: write raw Espruino straight to the REPL. This bypasses the
+  // firmware entirely, so it isolates "is the link working" from "is the
+  // firmware handling commands". If this flashes red but Custom's test does
+  // not, the link is fine and the issue is in the JSON/data-handler path.
+  flashTest: function() {
+    var p = Puck.write('digitalPulse(LED1,1,500);\n', function() {});
+    if (p && p.catch) {
+      p.catch(function(e) {
+        setStatus('Lib test failed: ' + (e && e.message ? e.message : e));
+        console.error('Puck.write test rejected:', e);
       });
     }
   }
@@ -691,6 +753,7 @@ function onConnected() {
   document.getElementById('connectBtn').textContent = 'Disconnect';
   document.getElementById('connectBtn').classList.add('connected');
   document.getElementById('controlsInner').classList.remove('disabled');
+  document.getElementById('testBtn').disabled = false;
   setStatus('Connected');
   // Let Android's GATT stack finish settling after discovery before the
   // first write. 500ms is marginal on some stacks; 800ms is safer. The
@@ -708,6 +771,7 @@ function onDisconnected() {
   document.getElementById('connectBtn').textContent = 'Connect to Orb';
   document.getElementById('connectBtn').classList.remove('connected');
   document.getElementById('controlsInner').classList.add('disabled');
+  document.getElementById('testBtn').disabled = true;
   setStatus('Disconnected');
 }
 
@@ -793,7 +857,15 @@ function setStatus(msg) {
   document.getElementById('statusLine').textContent = msg;
 }
 
+// ── Comms test button ──────────────────────────────────────────
+document.getElementById('testBtn').addEventListener('click', function() {
+  if (!state.connected) { setStatus('Connect first'); return; }
+  setStatus('Comms test: flashing red LED');
+  activeTransport().flashTest();
+});
+
 // ── Init ───────────────────────────────────────────────────────
+document.getElementById('versionLine').textContent = 'App ' + APP_VERSION;
 updateTrack(brightnessSlider);
 updateTrack(speedSlider);
 setMode('breathing');
