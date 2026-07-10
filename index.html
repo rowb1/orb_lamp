@@ -627,7 +627,16 @@ function send(obj) {
 }
 
 document.getElementById('connectBtn').addEventListener('click', function() {
-  if (state.connected) { activeTransport().disconnect(); return; }
+  if (state.connected) {
+    // Command the transport to close, THEN reset the UI immediately rather
+    // than waiting for a disconnect/close event. In library mode that event
+    // is not guaranteed to fire synchronously (or at all), which left the
+    // button stuck on "Disconnect". onDisconnected is idempotent, so if the
+    // event does also fire later it does no harm.
+    try { activeTransport().disconnect(); } catch (e) { console.error(e); }
+    onDisconnected();
+    return;
+  }
   if (transportMode === 'custom' && !navigator.bluetooth) {
     setStatus('Web Bluetooth not supported');
     return;
@@ -643,9 +652,13 @@ document.getElementById('connectBtn').addEventListener('click', function() {
 });
 
 // ── Transport toggle ───────────────────────────────────────────
+// NOTE: the shipped firmware now re-detaches the console on every BLE
+// connect (so the JSON path is reliable). That means Library mode, which
+// needs the REPL present, will NOT work against the shipped firmware — it
+// remains only for diagnostics against a REPL-present build.
 var HINTS = {
-  custom:  'Custom code · needs REPL-detached firmware',
-  library: 'puck.js library · needs REPL present (do not detach)'
+  custom:  'Custom JSON path · use with shipped firmware',
+  library: 'Diagnostic only · needs a REPL-present firmware build'
 };
 
 function setTransport(mode) {
@@ -704,15 +717,13 @@ function disconnect() {
 }
 
 function syncAll() {
-  // Send brightness and breath speed FIRST so that when 'mode' starts the
-  // lamp, it already reads the correct values. Sending 'mode' first would
-  // start breathing with stale values and then restart it 2-3 times as the
-  // later commands arrive (each setBreathSpeed/setMode calls startBreathing),
-  // which looks janky. Order here matters for both transports.
+  // Send mode FIRST. Now that the firmware guards setBreathSpeed/setBrightness
+  // by currentMode, establishing the mode up front means the later parameter
+  // commands apply cleanly without briefly forcing breathing in solid mode.
+  send({ cmd: 'mode',       value: state.on ? state.mode : 'off' });
   send({ cmd: 'brightness', value: state.brightness });
   send({ cmd: 'breathSpeed',value: state.breathNorm });
   send({ cmd: 'sleep',      value: state.sleepOn });
-  send({ cmd: 'mode',       value: state.on ? state.mode : 'off' });
 }
 
 // ── Power toggle ───────────────────────────────────────────────

@@ -1,5 +1,5 @@
 // =============================================================
-// Orb Lamp — Puck.js v2.1 firmware (Espruino)
+// Orb Lamp - Puck.js v2.1 firmware (Espruino)
 // Adapted from Frankie's jar7A.js. Drives an LR7843 opto-isolated
 // MOSFET module (active-HIGH PWM on D1) instead of the Puck's
 // onboard FET. Flash mode removed; breathing range narrowed to
@@ -8,43 +8,48 @@
 // optional 1-hour sleep timer enabled from app or button.
 // =============================================================
 
-var PWM_PIN = D1; // → LR7843 module PWM input (active-HIGH)
+var PWM_PIN = D1; // -> LR7843 module PWM input (active-HIGH)
 
 var i, t, t_s, t_sleep, step = 0, active = true;
 
 // Configurable Parameters
 var cfg = {
-  minHz:   0.2,      // 5.0s/cycle — default breathing rate
-  maxHz:   0.6,      // 1.67s/cycle — 3x default, slider maximum
-  sleepDelay: 60 * 60 // 1 hour in seconds — sleep timer if enabled
+  minHz:   0.2,      // 5.0s/cycle - default breathing rate
+  maxHz:   0.6,      // 1.67s/cycle - 3x default, slider maximum
+  sleepDelay: 60 * 60 // 1 hour in seconds - sleep timer if enabled
 };
 
 // Brightness: 0..1, persisted to flash. Default 0.4.
 var brightness = 0.4;
 
-// Sleep timer: off by default (mains-powered — no need to save battery)
+// Sleep timer: off by default (mains-powered - no need to save battery)
 var sleepEnabled = false;
 
 // Track current breathing hz so sleep-timer restart can resume correctly
 var currentHz = 0.2;
 
 // ---- Persistence ----
+// Espruino has no E.getStorage/E.setStorage. Flash persistence is the
+// Storage module: require("Storage").readJSON/writeJSON (or read/write).
+// readJSON returns undefined if the key is missing or unparseable, so no
+// try/catch is needed for a first boot with empty flash.
+var store = require("Storage");
+
 function loadSettings() {
-  var b = E.getStorage("brightness");
-  if (b !== undefined) {
-    var val = parseFloat(b);
-    if (!isNaN(val)) brightness = Math.max(0.05, Math.min(1.0, val));
+  var b = store.readJSON("orb.bright", true); // true = tolerate missing/bad
+  if (typeof b === "number" && !isNaN(b)) {
+    brightness = Math.max(0.05, Math.min(1.0, b));
   }
-  var s = E.getStorage("sleepEnabled");
-  if (s !== undefined) sleepEnabled = (s === "1");
+  var s = store.readJSON("orb.sleep", true);
+  if (typeof s === "boolean") sleepEnabled = s;
 }
 
 function saveBrightness() {
-  E.setStorage("brightness", brightness.toString());
+  store.writeJSON("orb.bright", brightness);
 }
 
 function saveSleepEnabled() {
-  E.setStorage("sleepEnabled", sleepEnabled ? "1" : "0");
+  store.writeJSON("orb.sleep", sleepEnabled);
 }
 
 // ---- Sleep timer ----
@@ -106,15 +111,32 @@ function powerOff() {
   // physically pressing the button.
 }
 
-// ---- Button: toggle on/off ----
-setWatch(function() {
-  resetSleepTimer(); // any button interaction resets sleep countdown
-  if (active) {
-    powerOff();
-  } else {
-    startBreathing(currentHz);
+// ---- Button ----
+// Short press  -> toggle lamp on/off
+// Long press (>3s) -> restore the BLE REPL for reprogramming (see boot)
+//
+// On Puck.js, BTN reads HIGH while held: press = rising, release = falling.
+// We watch BOTH edges and remember the moment of press, then compute the
+// hold duration ourselves on release. This avoids relying on e.lastTime
+// (which is `undefined` on the first-ever event and can reflect a bounce
+// rather than the press), so a quick tap can never be misread as a long
+// hold that spuriously restores the console.
+var pressTime = 0;
+setWatch(function(e) {
+  if (e.state) {           // rising edge = button pressed down
+    pressTime = e.time;
+    return;                // act on release, not press
   }
-}, BTN, {edge:"rising", repeat:true, debounce:50});
+  // falling edge = button released
+  resetSleepTimer();       // any button interaction resets sleep countdown
+  var held = e.time - pressTime; // seconds button was held
+  if (pressTime && held > 3) {
+    reattachConsole();
+    return;                // deliberate long-press: don't also toggle
+  }
+  if (active) powerOff();
+  else        startBreathing(currentHz);
+}, BTN, {edge:"both", repeat:true, debounce:50});
 
 // ---- App-facing setters ----
 function setMode(mode) {
@@ -164,6 +186,7 @@ function setSleep(enabled) {
 // Buffer incoming data and parse only when a newline delimiter is received.
 var bleBuffer = "";
 NRF.on('data', function(data) {
+  digitalPulse(LED3, 1, 30); // blue blink = raw BLE data reached handler
   bleBuffer += data;
   // Process all complete newline-terminated messages in the buffer
   var nl;
@@ -188,3 +211,41 @@ NRF.on('data', function(data) {
 // ---- Boot ----
 loadSettings();            // restore brightness + sleep preference from flash
 startBreathing(cfg.minHz); // default: on, 5s breathing cycle
+
+// ---- Move the REPL off the BLE UART ----
+// CRITICAL: By default Espruino routes incoming BLE UART data to the
+// JavaScript REPL (console). While the REPL owns the UART, NRF.on('data')
+// NEVER FIRES - the phone's JSON is fed to the interpreter as if typed at
+// a prompt instead of reaching our handler. This was the reason commands
+// never arrived even when a write appeared to succeed.
+//
+// E.setConsole(null, {force:true}) detaches the console so our data
+// handler receives everything. Trade-off: once this runs, the Puck can no
+// longer be reprogrammed over BLE (the Web IDE can't get a REPL) until you
+// recover it.
+//
+// RECOVERY: hold the button for ~3s to restore the console, THEN connect
+// the Web IDE to upload new firmware. We gate the detach behind a short
+// delay AND allow a long-press escape hatch so you're never locked out.
+var consoleDetached = false;
+var detachTimer = null;
+function detachConsole() {
+  detachTimer = null;
+  if (consoleDetached) return;
+  E.setConsole(null, { force: true });
+  consoleDetached = true;
+}
+function reattachConsole() {
+  if (detachTimer) { detachTimer = clearTimeout(detachTimer); } // cancel pending detach
+  Bluetooth.setConsole(1); // force console back onto BLE for reprogramming
+  consoleDetached = false;
+  digitalPulse(LED2, 1, [100,100,100,100,100]); // green triple-blink = REPL back
+  // NOTE: after this, the console owns the BLE UART again, so the custom
+  // (JSON) command path stops working until reboot. Reboot or re-run
+  // detachConsole() to return to app control.
+}
+// (Long-press to restore the REPL is handled in the main button watch above.)
+
+// Detach a moment after boot so any in-flight IDE upload/save completes
+// first. If you need the REPL back, long-press the button.
+detachTimer = setTimeout(detachConsole, 3000);
