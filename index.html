@@ -11,10 +11,6 @@
   <link rel="icon" href="icon-192.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&display=swap" rel="stylesheet">
-  <!-- Espruino's proven Web Bluetooth helper. Used by the "Library"
-       transport mode as an A/B reference against the custom BLE code.
-       Loaded async; if it fails to load, Library mode is disabled. -->
-  <script src="https://www.puck-js.com/puck.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -431,18 +427,6 @@
 
   <div class="controls">
 
-    <!-- Diagnostics: transport A/B toggle -->
-    <div class="transport-strip">
-      <span class="transport-label">Transport</span>
-      <div class="transport-seg" id="transportSeg">
-        <button class="seg-btn active" id="segCustom" data-mode="custom">Custom</button>
-        <button class="seg-btn" id="segLibrary" data-mode="library">Library</button>
-      </div>
-    </div>
-    <div class="transport-hint" id="transportHint">
-      Custom code · needs REPL detached firmware
-    </div>
-
     <button class="connect-btn" id="connectBtn">Connect to Orb</button>
 
     <!-- Comms self-test: flashes the Puck's RED LED for 0.5s. Works in both
@@ -514,12 +498,15 @@
 <script>
 // ── App version ────────────────────────────────────────────────
 // Bump this on every change you want to be able to identify at runtime.
-var APP_VERSION = 'v0.9.0';
+var APP_VERSION = 'v0.10.0';
 
-// ── BLE UUIDs (Nordic UART) ────────────────────────────────────
-var UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-var UART_TX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // phone → Puck (write to this)
-var UART_RX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Puck → phone (notify)
+// ── BLE UUIDs ──────────────────────────────────────────────────
+// Custom command service + characteristic (must match the firmware).
+// Commands are written to CMD_CHAR as newline-terminated JSON. This is a
+// dedicated characteristic, NOT the Nordic UART, so it is independent of
+// the Puck's JS console.
+var CMD_SERVICE = '6e40aa01-b5a3-f393-e0a9-e50e24dcca9e';
+var CMD_CHAR    = '6e40aa02-b5a3-f393-e0a9-e50e24dcca9e';
 
 // ── State ──────────────────────────────────────────────────────
 var state = {
@@ -531,48 +518,25 @@ var state = {
   sleepOn:     false,
 };
 
-var bleDevice = null, bleServer = null, bleTxChar = null;
+var bleDevice = null, bleServer = null, bleCmdChar = null;
 
-// ── Transport A/B ──────────────────────────────────────────────
-// Two ways to reach the Puck, switchable at runtime for diagnosis:
-//
-//   'custom'  — the hand-written Web Bluetooth code below. Sends
-//               newline-delimited JSON to the TX characteristic.
-//               REQUIRES firmware with the REPL detached
-//               (E.setConsole(null,{force:true})) so NRF.on('data')
-//               receives the JSON.
-//
-//   'library' — Espruino's proven puck.js helper (Puck.write). It
-//               sends text to the REPL, which evaluates it. So it
-//               instead calls the firmware's setter FUNCTIONS by
-//               name, e.g. setMode("solid"). REQUIRES the REPL to be
-//               PRESENT (do NOT detach the console).
-//
-// The two modes need opposite firmware states, which is exactly what
-// makes them a clean diagnostic: if 'library' works and 'custom'
-// doesn't, the connection/write mechanism is fine and the fault is in
-// the custom GATT handling or the firmware data handler. If both fail,
-// the problem is environmental (this Android/Chrome BLE stack).
-var transportMode = 'custom'; // 'custom' | 'library'
-var libAvailable = (typeof Puck !== 'undefined');
-
-// ── Custom transport: raw Web Bluetooth ────────────────────────
-// Android permits only ONE outstanding GATT operation at a time.
-// Firing several writeValue() calls back to back rejects all but the
-// first with "GATT operation already in progress". So we queue writes
-// and send them strictly one after another.
+// ── BLE write queue ────────────────────────────────────────────
+// Android permits only ONE outstanding GATT operation at a time. Firing
+// several writeValue() calls back to back rejects all but the first with
+// "GATT operation already in progress". So we queue writes and send them
+// strictly one after another.
 var txQueue = [], txBusy = false;
 
 function pumpQueue() {
   if (txBusy || txQueue.length === 0) return;
-  if (!bleTxChar || !bleServer || !bleServer.connected) {
+  if (!bleCmdChar || !bleServer || !bleServer.connected) {
     setStatus('Not connected — reconnect');
     txQueue.length = 0;
     return;
   }
   txBusy = true;
   var bytes = txQueue.shift();
-  bleTxChar.writeValue(bytes)
+  bleCmdChar.writeValue(bytes)
     .then(function() { txBusy = false; pumpQueue(); })
     .catch(function(e) {
       txBusy = false;
@@ -582,171 +546,60 @@ function pumpQueue() {
     });
 }
 
-var customTransport = {
-  connect: function() {
-    setStatus('Scanning…');
-    return navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: 'Puck' }, { namePrefix: 'puck' }],
-      optionalServices: [UART_SERVICE]
-    })
-    .then(function(d) {
-      bleDevice = d;
-      bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-      setStatus('Connecting…');
-      return d.gatt.connect();
-    })
-    .then(function(s)  { bleServer = s; return s.getPrimaryService(UART_SERVICE); })
-    .then(function(sv) { return sv.getCharacteristic(UART_TX); })
-    .then(function(c)  { bleTxChar = c; onConnected(); });
-  },
-  disconnect: function() {
-    if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
-  },
-  // Custom mode speaks JSON to the detached-REPL firmware.
-  sendCommand: function(obj) {
-    if (!bleTxChar) { setStatus('Not connected'); return; }
-    var msg = JSON.stringify(obj) + '\n';
-    txQueue.push(new TextEncoder().encode(msg));
-    pumpQueue();
-  },
-  // Comms test: send the JSON {cmd:'test'} which the firmware handles by
-  // flashing the red LED. Proves the JSON path end to end.
-  flashTest: function() {
-    this.sendCommand({ cmd: 'test' });
-  }
-};
-
-// ── Library transport: Espruino puck.js helper ─────────────────
-// Puck.write sends text to the REPL. We translate each command object
-// into a direct call to the firmware's setter functions, which the
-// REPL evaluates. Puck.write serializes its own writes internally, so
-// no queue is needed here.
-function cmdToEspruinoCall(obj) {
-  // Mirrors the firmware's BLE command dispatch, but as function calls.
-  switch (obj.cmd) {
-    case 'mode':        return 'setMode(' + JSON.stringify(obj.value) + ');\n';
-    case 'breathSpeed': return 'setBreathSpeed(' + Number(obj.value) + ');\n';
-    case 'brightness':  return 'setBrightness(' + Number(obj.value) + ');\n';
-    case 'sleep':       return 'setSleep(' + (obj.value ? 'true' : 'false') + ');\n';
-    default:            return '';
-  }
+// ── Connect / disconnect ───────────────────────────────────────
+function bleConnect() {
+  setStatus('Scanning…');
+  return navigator.bluetooth.requestDevice({
+    filters: [{ namePrefix: 'Puck' }, { namePrefix: 'puck' }],
+    optionalServices: [CMD_SERVICE]
+  })
+  .then(function(d) {
+    bleDevice = d;
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+    setStatus('Connecting…');
+    return d.gatt.connect();
+  })
+  .then(function(s)  { bleServer = s; return s.getPrimaryService(CMD_SERVICE); })
+  .then(function(sv) { return sv.getCharacteristic(CMD_CHAR); })
+  .then(function(c)  { bleCmdChar = c; onConnected(); });
 }
 
-var libraryTransport = {
-  connect: function() {
-    setStatus('Connecting (library)…');
-    return new Promise(function(resolve, reject) {
-      // Puck.connect opens and remembers a single connection so
-      // subsequent Puck.write calls reuse it.
-      Puck.connect(function(conn) {
-        if (!conn) { reject(new Error('Puck.connect returned null')); return; }
-        conn.on('close', onDisconnected);
-        onConnected();
-        resolve();
-      });
-    });
-  },
-  disconnect: function() {
-    if (typeof Puck !== 'undefined' && Puck.getConnection && Puck.getConnection()) {
-      Puck.getConnection().close();
-    }
-  },
-  sendCommand: function(obj) {
-    var call = cmdToEspruinoCall(obj);
-    if (!call) return;
-    // Puck.write returns a promise; surface failures like the custom path
-    // so the two modes are comparable when diagnosing.
-    var p = Puck.write(call, function() {});
-    if (p && p.catch) {
-      p.catch(function(e) {
-        setStatus('Lib write failed: ' + (e && e.message ? e.message : e));
-        console.error('Puck.write rejected:', e);
-      });
-    }
-  },
-  // Comms test: write raw Espruino straight to the REPL. This bypasses the
-  // firmware entirely, so it isolates "is the link working" from "is the
-  // firmware handling commands". If this flashes red but Custom's test does
-  // not, the link is fine and the issue is in the JSON/data-handler path.
-  flashTest: function() {
-    var p = Puck.write('digitalPulse(LED1,1,500);\n', function() {});
-    if (p && p.catch) {
-      p.catch(function(e) {
-        setStatus('Lib test failed: ' + (e && e.message ? e.message : e));
-        console.error('Puck.write test rejected:', e);
-      });
-    }
-  }
-};
-
-function activeTransport() {
-  return transportMode === 'library' ? libraryTransport : customTransport;
+function bleDisconnect() {
+  if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
 }
 
-// ── Unified send ───────────────────────────────────────────────
+// ── Send a command ─────────────────────────────────────────────
+// Commands are newline-terminated JSON written to the custom command
+// characteristic. The firmware's onWrite reassembles and dispatches them.
 function send(obj) {
-  activeTransport().sendCommand(obj);
+  if (!bleCmdChar) { setStatus('Not connected'); return; }
+  var msg = JSON.stringify(obj) + '\n';
+  txQueue.push(new TextEncoder().encode(msg));
+  pumpQueue();
+}
+
+// Comms self-test: {cmd:'test'} makes the firmware flash the red LED.
+function flashTest() {
+  send({ cmd: 'test' });
 }
 
 document.getElementById('connectBtn').addEventListener('click', function() {
   if (state.connected) {
-    // Command the transport to close, THEN reset the UI immediately rather
-    // than waiting for a disconnect/close event. In library mode that event
-    // is not guaranteed to fire synchronously (or at all), which left the
-    // button stuck on "Disconnect". onDisconnected is idempotent, so if the
-    // event does also fire later it does no harm.
-    try { activeTransport().disconnect(); } catch (e) { console.error(e); }
+    // Close, then reset the UI immediately rather than waiting for the
+    // disconnect event (which is idempotent if it also fires later).
+    try { bleDisconnect(); } catch (e) { console.error(e); }
     onDisconnected();
     return;
   }
-  if (transportMode === 'custom' && !navigator.bluetooth) {
+  if (!navigator.bluetooth) {
     setStatus('Web Bluetooth not supported');
     return;
   }
-  if (transportMode === 'library' && !libAvailable) {
-    setStatus('puck.js library failed to load');
-    return;
-  }
-  activeTransport().connect().catch(function(e) {
+  bleConnect().catch(function(e) {
     setStatus('Connect failed: ' + (e && e.message ? e.message : e));
     console.error(e);
   });
 });
-
-// ── Transport toggle ───────────────────────────────────────────
-// NOTE: the shipped firmware now re-detaches the console on every BLE
-// connect (so the JSON path is reliable). That means Library mode, which
-// needs the REPL present, will NOT work against the shipped firmware — it
-// remains only for diagnostics against a REPL-present build.
-var HINTS = {
-  custom:  'Custom JSON path · use with shipped firmware',
-  library: 'Diagnostic only · needs a REPL-present firmware build'
-};
-
-function setTransport(mode) {
-  if (state.connected) {
-    setStatus('Disconnect before switching transport');
-    return;
-  }
-  if (mode === 'library' && !libAvailable) {
-    setStatus('puck.js library unavailable');
-    return;
-  }
-  transportMode = mode;
-  document.getElementById('segCustom').classList.toggle('active', mode === 'custom');
-  document.getElementById('segLibrary').classList.toggle('active', mode === 'library');
-  document.getElementById('transportHint').textContent = HINTS[mode];
-}
-
-document.getElementById('segCustom').addEventListener('click', function() { setTransport('custom'); });
-document.getElementById('segLibrary').addEventListener('click', function() { setTransport('library'); });
-
-// Disable Library segment if the helper script didn't load.
-if (!libAvailable) {
-  var segLib = document.getElementById('segLibrary');
-  segLib.disabled = true;
-  segLib.title = 'puck.js library failed to load';
-}
 
 function onConnected() {
   state.connected = true;
@@ -764,7 +617,7 @@ function onConnected() {
 
 function onDisconnected() {
   state.connected = false;
-  bleTxChar = null;
+  bleCmdChar = null;
   bleServer = null;
   txQueue.length = 0;
   txBusy = false;
@@ -776,8 +629,7 @@ function onDisconnected() {
 }
 
 function disconnect() {
-  // Kept for any external callers; delegates to the active transport.
-  activeTransport().disconnect();
+  bleDisconnect();
 }
 
 function syncAll() {
@@ -861,7 +713,7 @@ function setStatus(msg) {
 document.getElementById('testBtn').addEventListener('click', function() {
   if (!state.connected) { setStatus('Connect first'); return; }
   setStatus('Comms test: flashing red LED');
-  activeTransport().flashTest();
+  flashTest();
 });
 
 // ── Init ───────────────────────────────────────────────────────
@@ -869,7 +721,6 @@ document.getElementById('versionLine').textContent = 'App ' + APP_VERSION;
 updateTrack(brightnessSlider);
 updateTrack(speedSlider);
 setMode('breathing');
-setTransport('custom'); // sync toggle UI + hint with default transport
 </script>
 </body>
 </html>
