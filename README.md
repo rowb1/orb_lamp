@@ -21,8 +21,8 @@ Inspired by [Frankie's Magic Lamp](https://github.com/rowb1/frankie).
 | BLE MAC address | `EF:9A:B3:5B:A9:12` (random) |
 | Firmware | Espruino 2v29 |
 | BLE service | Nordic UART Service `6e400001-b5a3-f393-e0a9-e50e24dcca9e` |
-| Write characteristic (phone→Puck) | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` |
-| Notify characteristic (Puck→phone) | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` |
+| Write characteristic (phone→Puck) | `6e400002-b5a3-f393-e0a9-e50e24dcca9e` |
+| Notify characteristic (Puck→phone) | `6e400003-b5a3-f393-e0a9-e50e24dcca9e` |
 | Manufacturer data key | `0x0590` |
 
 ## App
