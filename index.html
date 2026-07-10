@@ -403,8 +403,8 @@
 <script>
 // ── BLE UUIDs (Nordic UART) ────────────────────────────────────
 var UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-var UART_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // phone → Puck (write)
-var UART_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Puck → phone (notify)
+var UART_RX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // phone → Puck (write)
+var UART_TX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // Puck → phone (notify)
 
 // ── State ──────────────────────────────────────────────────────
 var state = {
@@ -436,7 +436,7 @@ document.getElementById('connectBtn').addEventListener('click', function() {
   }
   setStatus('Scanning…');
   navigator.bluetooth.requestDevice({
-    filters: [{ namePrefix: 'Puck' }],
+    filters: [{ services: [UART_SERVICE] }],
     optionalServices: [UART_SERVICE]
   })
   .then(function(d) {
