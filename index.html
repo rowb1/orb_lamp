@@ -15,15 +15,15 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --bg:       #12162a;
-      --orb:      #f0a500;
-      --orb-dim:  #7a5200;
-      --orb-dark: #3a2800;
-      --cream:    #f0e6c8;
-      --cream-dim:#a08c6e;
-      --glass:    rgba(255,255,255,0.06);
-      --glass-b:  rgba(255,255,255,0.10);
-      --breath-s: 5s; /* updated by JS to match current breathing speed */
+      --bg:        #12162a;
+      --orb:       #f0a500;
+      --orb-dim:   #7a5200;
+      --orb-dark:  #3a2800;
+      --cream:     #f0e6c8;
+      --cream-dim: #a08c6e;
+      --glass:     rgba(255,255,255,0.06);
+      --green:     #4caf82;
+      --breath-s:  5s;
     }
 
     html, body {
@@ -46,6 +46,7 @@
       animation: ambient-breath var(--breath-s) ease-in-out infinite;
       pointer-events: none;
       z-index: 0;
+      transition: opacity 0.8s ease;
     }
 
     @keyframes ambient-breath {
@@ -53,15 +54,11 @@
       50%       { opacity: 1;   transform: scale(1.06); }
     }
 
-    body.lamp-off::before {
-      animation: none;
-      opacity: 0;
-      transition: opacity 0.8s ease;
-    }
+    body.lamp-off::before    { animation: none; opacity: 0; }
+    body.lamp-solid::before  { animation: none; opacity: 1; }
 
-    body.lamp-solid::before {
-      animation: none;
-      opacity: 1;
+    @media (prefers-reduced-motion: reduce) {
+      body::before { animation: none !important; }
     }
 
     /* Layout */
@@ -111,20 +108,19 @@
       min-height: 1em;
     }
 
-    /* Controls card */
+    /* Controls */
     .controls {
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 18px;
+      gap: 14px;
     }
 
-    /* Glass card */
     .card {
       background: var(--glass);
       border: 1px solid rgba(240,165,0,0.14);
       border-radius: 16px;
-      padding: 18px 20px;
+      padding: 16px 20px;
       backdrop-filter: blur(8px);
     }
 
@@ -133,58 +129,78 @@
       letter-spacing: 0.16em;
       color: var(--cream-dim);
       text-transform: uppercase;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
 
-    /* Power toggle */
-    .power-row {
+    /* Row layout for label + toggle */
+    .row {
       display: flex;
       align-items: center;
       justify-content: space-between;
     }
 
-    .power-label {
+    .row-label {
       font-family: 'Cinzel', serif;
-      font-size: 1rem;
-      font-weight: 400;
-      letter-spacing: 0.1em;
+      font-size: 0.95rem;
+      letter-spacing: 0.08em;
       color: var(--cream);
     }
 
-    .toggle-btn {
-      width: 62px;
-      height: 34px;
-      border-radius: 17px;
+    .row-sublabel {
+      font-size: 0.68rem;
+      color: var(--cream-dim);
+      margin-top: 2px;
+      letter-spacing: 0.05em;
+    }
+
+    /* Toggle switch — reused for power and sleep */
+    .toggle {
+      width: 56px;
+      height: 30px;
+      border-radius: 15px;
       border: 2px solid var(--orb-dim);
       background: var(--orb-dark);
       position: relative;
       cursor: pointer;
+      flex-shrink: 0;
       transition: background 0.3s, border-color 0.3s;
       -webkit-tap-highlight-color: transparent;
     }
 
-    .toggle-btn::after {
+    .toggle::after {
       content: '';
       position: absolute;
-      top: 3px; left: 3px;
-      width: 24px; height: 24px;
+      top: 2px; left: 2px;
+      width: 22px; height: 22px;
       border-radius: 50%;
       background: var(--cream-dim);
       transition: transform 0.3s, background 0.3s;
     }
 
-    .toggle-btn.on {
+    .toggle.on {
       background: var(--orb-dim);
       border-color: var(--orb);
     }
 
-    .toggle-btn.on::after {
-      transform: translateX(28px);
+    .toggle.on::after {
+      transform: translateX(26px);
       background: var(--orb);
       box-shadow: 0 0 8px rgba(240,165,0,0.6);
     }
 
-    /* Mode selector */
+    /* Green variant for sleep toggle */
+    .toggle.sleep-on {
+      background: rgba(76,175,130,0.25);
+      border-color: var(--green);
+    }
+
+    .toggle.sleep-on::after {
+      transform: translateX(26px);
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(76,175,130,0.5);
+    }
+
+    /* Mode buttons */
     .mode-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -192,13 +208,13 @@
     }
 
     .mode-btn {
-      padding: 12px 8px;
+      padding: 11px 8px;
       border-radius: 12px;
       border: 1.5px solid var(--orb-dim);
       background: transparent;
       color: var(--cream-dim);
       font-family: 'Cinzel', serif;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
       letter-spacing: 0.1em;
       cursor: pointer;
       transition: all 0.25s;
@@ -213,11 +229,8 @@
     }
 
     /* Sliders */
-    .slider-row {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
+    .slider-row { display: flex; flex-direction: column; gap: 8px; }
+    .slider-row + .slider-row { margin-top: 16px; }
 
     .slider-header {
       display: flex;
@@ -226,14 +239,14 @@
     }
 
     .slider-name {
-      font-size: 0.72rem;
+      font-size: 0.7rem;
       letter-spacing: 0.1em;
       color: var(--cream-dim);
       text-transform: uppercase;
     }
 
     .slider-value {
-      font-size: 0.78rem;
+      font-size: 0.76rem;
       color: var(--orb);
       font-variant-numeric: tabular-nums;
       min-width: 3.5em;
@@ -245,7 +258,9 @@
       width: 100%;
       height: 4px;
       border-radius: 2px;
-      background: linear-gradient(to right, var(--orb) 0%, var(--orb) var(--pct, 50%), var(--orb-dark) var(--pct, 50%), var(--orb-dark) 100%);
+      background: linear-gradient(to right,
+        var(--orb) 0%, var(--orb) var(--pct,40%),
+        var(--orb-dark) var(--pct,40%), var(--orb-dark) 100%);
       outline: none;
       cursor: pointer;
     }
@@ -255,7 +270,7 @@
       width: 22px; height: 22px;
       border-radius: 50%;
       background: var(--orb);
-      border: 2px solid #12162a;
+      border: 2px solid var(--bg);
       box-shadow: 0 0 8px rgba(240,165,0,0.5);
       cursor: pointer;
     }
@@ -264,21 +279,25 @@
       width: 22px; height: 22px;
       border-radius: 50%;
       background: var(--orb);
-      border: 2px solid #12162a;
+      border: 2px solid var(--bg);
       box-shadow: 0 0 8px rgba(240,165,0,0.5);
       cursor: pointer;
     }
 
+    /* Speed slider dims when in solid mode */
+    .speed-card { transition: opacity 0.3s; }
+    .speed-card.dimmed { opacity: 0.35; pointer-events: none; }
+
     /* Connect button */
     .connect-btn {
       width: 100%;
-      padding: 15px;
+      padding: 14px;
       border-radius: 14px;
       border: 1.5px solid var(--orb);
       background: rgba(240,165,0,0.10);
       color: var(--orb);
       font-family: 'Cinzel', serif;
-      font-size: 0.9rem;
+      font-size: 0.88rem;
       letter-spacing: 0.14em;
       cursor: pointer;
       transition: background 0.25s, box-shadow 0.25s;
@@ -287,16 +306,14 @@
 
     .connect-btn:active {
       background: rgba(240,165,0,0.22);
-      box-shadow: 0 0 16px rgba(240,165,0,0.25);
     }
 
     .connect-btn.connected {
-      border-color: #4caf82;
-      color: #4caf82;
+      border-color: var(--green);
+      color: var(--green);
       background: rgba(76,175,130,0.08);
     }
 
-    /* Disabled state for controls */
     .controls-inner {
       display: flex;
       flex-direction: column;
@@ -307,10 +324,6 @@
     .controls-inner.disabled {
       opacity: 0.35;
       pointer-events: none;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-      body::before { animation: none !important; }
     }
   </style>
 </head>
@@ -330,9 +343,9 @@
 
       <!-- Power -->
       <div class="card">
-        <div class="power-row">
-          <span class="power-label">Power</span>
-          <button class="toggle-btn" id="powerBtn" aria-label="Power toggle"></button>
+        <div class="row">
+          <span class="row-label">Power</span>
+          <button class="toggle" id="powerToggle" aria-label="Power"></button>
         </div>
       </div>
 
@@ -347,18 +360,23 @@
 
       <!-- Brightness -->
       <div class="card">
-        <div class="card-label">Brightness &amp; Speed</div>
+        <div class="card-label">Brightness</div>
         <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">Brightness</span>
+            <span class="slider-name">Level</span>
             <span class="slider-value" id="brightnessVal">40%</span>
           </div>
           <input type="range" id="brightnessSlider" min="5" max="100" value="40"
                  aria-label="Brightness">
         </div>
-        <div class="slider-row" style="margin-top:18px">
+      </div>
+
+      <!-- Breathing speed -->
+      <div class="card speed-card" id="speedCard">
+        <div class="card-label">Breath speed</div>
+        <div class="slider-row">
           <div class="slider-header">
-            <span class="slider-name">Breath speed</span>
+            <span class="slider-name">Cycle</span>
             <span class="slider-value" id="speedVal">5.0 s</span>
           </div>
           <input type="range" id="speedSlider" min="0" max="100" value="0"
@@ -366,53 +384,70 @@
         </div>
       </div>
 
-    </div><!-- /controls-inner -->
-  </div><!-- /controls -->
+      <!-- Sleep timer -->
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="row-label">Sleep timer</div>
+            <div class="row-sublabel">Turn off after 1 hour of inactivity</div>
+          </div>
+          <button class="toggle" id="sleepToggle" aria-label="Sleep timer"></button>
+        </div>
+      </div>
 
-</div><!-- /app -->
+    </div>
+  </div>
+
+</div>
 
 <script>
+// ── BLE UUIDs (Nordic UART) ────────────────────────────────────
+var UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+var UART_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // phone → Puck (write)
+var UART_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // Puck → phone (notify)
+
 // ── State ──────────────────────────────────────────────────────
 var state = {
-  connected: false,
-  on: false,
-  mode: 'breathing',     // 'breathing' | 'solid'
-  brightness: 0.40,
-  breathNorm: 0,         // 0..1 slider value
+  connected:   false,
+  on:          false,
+  mode:        'breathing',
+  brightness:  0.40,
+  breathNorm:  0,
+  sleepOn:     false,
 };
 
-// ── BLE ────────────────────────────────────────────────────────
-var bleDevice = null, bleChar = null;
-var UART_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-var UART_TX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // write to Puck
+var bleDevice = null, bleRxChar = null;
 
+// ── BLE ────────────────────────────────────────────────────────
 function send(obj) {
-  if (!bleChar) return;
+  if (!bleRxChar) return;
   var msg = JSON.stringify(obj) + '\n';
-  var buf = new TextEncoder().encode(msg);
-  bleChar.writeValue(buf).catch(function(e) {
-    setStatus('Send error — reconnect?');
+  bleRxChar.writeValue(new TextEncoder().encode(msg)).catch(function(e) {
+    setStatus('Send failed — try reconnecting');
+    console.error(e);
   });
 }
 
 document.getElementById('connectBtn').addEventListener('click', function() {
   if (state.connected) { disconnect(); return; }
+  if (!navigator.bluetooth) {
+    setStatus('Web Bluetooth not supported');
+    return;
+  }
+  setStatus('Scanning…');
   navigator.bluetooth.requestDevice({
     filters: [{ namePrefix: 'Puck' }],
     optionalServices: [UART_SERVICE]
   })
-  .then(function(device) {
-    bleDevice = device;
+  .then(function(d) {
+    bleDevice = d;
     bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
     setStatus('Connecting…');
-    return device.gatt.connect();
+    return d.gatt.connect();
   })
-  .then(function(server) { return server.getPrimaryService(UART_SERVICE); })
-  .then(function(service) { return service.getCharacteristic(UART_TX); })
-  .then(function(char) {
-    bleChar = char;
-    onConnected();
-  })
+  .then(function(s)  { return s.getPrimaryService(UART_SERVICE); })
+  .then(function(sv) { return sv.getCharacteristic(UART_RX); })
+  .then(function(c)  { bleRxChar = c; onConnected(); })
   .catch(function(e) {
     setStatus('Connection failed');
     console.error(e);
@@ -425,13 +460,12 @@ function onConnected() {
   document.getElementById('connectBtn').classList.add('connected');
   document.getElementById('controlsInner').classList.remove('disabled');
   setStatus('Connected');
-  // Push current UI state to Puck
   syncAll();
 }
 
 function onDisconnected() {
   state.connected = false;
-  bleChar = null;
+  bleRxChar = null;
   document.getElementById('connectBtn').textContent = 'Connect to Orb';
   document.getElementById('connectBtn').classList.remove('connected');
   document.getElementById('controlsInner').classList.add('disabled');
@@ -443,92 +477,82 @@ function disconnect() {
 }
 
 function syncAll() {
-  send({ cmd: 'mode', value: state.on ? state.mode : 'off' });
+  send({ cmd: 'mode',       value: state.on ? state.mode : 'off' });
   send({ cmd: 'brightness', value: state.brightness });
-  send({ cmd: 'breathSpeed', value: state.breathNorm });
+  send({ cmd: 'breathSpeed',value: state.breathNorm });
+  send({ cmd: 'sleep',      value: state.sleepOn });
 }
 
 // ── Power toggle ───────────────────────────────────────────────
-var powerBtn = document.getElementById('powerBtn');
-powerBtn.addEventListener('click', function() {
+document.getElementById('powerToggle').addEventListener('click', function() {
   state.on = !state.on;
-  powerBtn.classList.toggle('on', state.on);
+  this.classList.toggle('on', state.on);
   updateBodyClass();
   send({ cmd: 'mode', value: state.on ? state.mode : 'off' });
 });
 
 // ── Mode buttons ───────────────────────────────────────────────
-document.getElementById('modeBreathing').addEventListener('click', function() {
-  setMode('breathing');
-});
-document.getElementById('modeSolid').addEventListener('click', function() {
-  setMode('solid');
-});
+document.getElementById('modeBreathing').addEventListener('click', function() { setMode('breathing'); });
+document.getElementById('modeSolid').addEventListener('click',     function() { setMode('solid'); });
 
 function setMode(m) {
   state.mode = m;
   document.getElementById('modeBreathing').classList.toggle('active', m === 'breathing');
-  document.getElementById('modeSolid').classList.toggle('active', m === 'solid');
-  document.getElementById('speedSlider').parentElement.parentElement.style.opacity =
-    m === 'breathing' ? '1' : '0.35';
+  document.getElementById('modeSolid').classList.toggle('active',     m === 'solid');
+  document.getElementById('speedCard').classList.toggle('dimmed', m === 'solid');
   updateBodyClass();
   if (state.on) send({ cmd: 'mode', value: m });
 }
 
 // ── Brightness slider ──────────────────────────────────────────
 var brightnessSlider = document.getElementById('brightnessSlider');
-var brightnessVal    = document.getElementById('brightnessVal');
-
 brightnessSlider.addEventListener('input', function() {
   var pct = parseInt(this.value);
   state.brightness = pct / 100;
-  brightnessVal.textContent = pct + '%';
-  updateSliderTrack(this);
+  document.getElementById('brightnessVal').textContent = pct + '%';
+  updateTrack(this);
   if (state.connected) send({ cmd: 'brightness', value: state.brightness });
 });
 
 // ── Speed slider ───────────────────────────────────────────────
 var speedSlider = document.getElementById('speedSlider');
-var speedVal    = document.getElementById('speedVal');
-
-// 0..1 norm → cycle time in seconds: 5.0s (0.2Hz) down to 1.67s (0.6Hz)
-function normToCycle(n) {
-  var hz = 0.2 + n * (0.6 - 0.2);
-  return (1 / hz).toFixed(1);
-}
-
 speedSlider.addEventListener('input', function() {
   state.breathNorm = parseInt(this.value) / 100;
-  var cycle = normToCycle(state.breathNorm);
-  speedVal.textContent = cycle + ' s';
-  updateSliderTrack(this);
-  // Update ambient glow animation speed
-  var cycleS = parseFloat(cycle);
-  document.documentElement.style.setProperty('--breath-s', cycleS + 's');
+  var hz = 0.2 + state.breathNorm * 0.4;
+  var cycle = (1 / hz).toFixed(1);
+  document.getElementById('speedVal').textContent = cycle + ' s';
+  document.documentElement.style.setProperty('--breath-s', cycle + 's');
+  updateTrack(this);
   if (state.connected) send({ cmd: 'breathSpeed', value: state.breathNorm });
 });
 
-// ── Slider track fill helper ───────────────────────────────────
-function updateSliderTrack(el) {
+// ── Sleep toggle ───────────────────────────────────────────────
+document.getElementById('sleepToggle').addEventListener('click', function() {
+  state.sleepOn = !state.sleepOn;
+  this.classList.toggle('on', false);          // remove generic on class
+  this.classList.toggle('sleep-on', state.sleepOn);
+  if (state.connected) send({ cmd: 'sleep', value: state.sleepOn });
+});
+
+// ── Helpers ────────────────────────────────────────────────────
+function updateBodyClass() {
+  document.body.classList.toggle('lamp-off',       !state.on);
+  document.body.classList.toggle('lamp-solid',      state.on && state.mode === 'solid');
+  document.body.classList.toggle('lamp-breathing',  state.on && state.mode === 'breathing');
+}
+
+function updateTrack(el) {
   var pct = ((el.value - el.min) / (el.max - el.min) * 100).toFixed(1) + '%';
   el.style.setProperty('--pct', pct);
 }
 
-// ── Body class → ambient glow state ───────────────────────────
-function updateBodyClass() {
-  document.body.classList.toggle('lamp-off',    !state.on);
-  document.body.classList.toggle('lamp-solid',   state.on && state.mode === 'solid');
-  document.body.classList.toggle('lamp-breathing', state.on && state.mode === 'breathing');
-}
-
-// ── Status line ────────────────────────────────────────────────
 function setStatus(msg) {
   document.getElementById('statusLine').textContent = msg;
 }
 
 // ── Init ───────────────────────────────────────────────────────
-updateSliderTrack(brightnessSlider);
-updateSliderTrack(speedSlider);
+updateTrack(brightnessSlider);
+updateTrack(speedSlider);
 setMode('breathing');
 </script>
 </body>
