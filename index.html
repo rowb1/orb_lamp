@@ -422,7 +422,7 @@ var bleDevice = null, bleTxChar = null;
 function send(obj) {
   if (!bleTxChar) return;
   var msg = JSON.stringify(obj) + '\n';
-  bleTxChar.writeValueWithoutResponse(new TextEncoder().encode(msg)).catch(function(e) {
+  bleTxChar.writeValue(new TextEncoder().encode(msg)).catch(function(e) {
     setStatus('Send failed — try reconnecting');
     console.error(e);
   });
@@ -460,7 +460,7 @@ function onConnected() {
   document.getElementById('connectBtn').classList.add('connected');
   document.getElementById('controlsInner').classList.remove('disabled');
   setStatus('Connected');
-  syncAll();
+  setTimeout(syncAll, 500); // delay to let GATT stabilise
 }
 
 function onDisconnected() {

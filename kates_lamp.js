@@ -159,18 +159,31 @@ function setSleep(enabled) {
 //   {"cmd":"breathSpeed","value":0.0-1.0}  // 0=5s/cycle, 1=1.67s/cycle
 //   {"cmd":"brightness", "value":0.0-1.0}  // persisted to flash
 //   {"cmd":"sleep",      "value":true|false} // enable/disable 1hr sleep timer
-function onBleCommand(msg) {
-  try {
-    var cmd = JSON.parse(msg);
-    if      (cmd.cmd === "mode")        setMode(cmd.value);
-    else if (cmd.cmd === "breathSpeed") setBreathSpeed(cmd.value);
-    else if (cmd.cmd === "brightness")  setBrightness(cmd.value);
-    else if (cmd.cmd === "sleep")       setSleep(cmd.value);
-  } catch (e) {
-    // ignore malformed commands
+//
+// BLE MTU is 20 bytes per packet, so longer JSON arrives in fragments.
+// Buffer incoming data and parse only when a newline delimiter is received.
+var bleBuffer = "";
+NRF.on('data', function(data) {
+  bleBuffer += data;
+  // Process all complete newline-terminated messages in the buffer
+  var nl;
+  while ((nl = bleBuffer.indexOf('\n')) !== -1) {
+    var msg = bleBuffer.substr(0, nl).trim();
+    bleBuffer = bleBuffer.substr(nl + 1);
+    if (msg.length === 0) continue;
+    try {
+      var cmd = JSON.parse(msg);
+      if      (cmd.cmd === "mode")        setMode(cmd.value);
+      else if (cmd.cmd === "breathSpeed") setBreathSpeed(cmd.value);
+      else if (cmd.cmd === "brightness")  setBrightness(cmd.value);
+      else if (cmd.cmd === "sleep")       setSleep(cmd.value);
+    } catch (e) {
+      // ignore malformed or incomplete fragments
+    }
   }
-}
-NRF.on('data', onBleCommand);
+  // Safety: prevent buffer growing unbounded if no newline arrives
+  if (bleBuffer.length > 200) bleBuffer = "";
+});
 
 // ---- Boot ----
 loadSettings();            // restore brightness + sleep preference from flash
