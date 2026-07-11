@@ -4,9 +4,31 @@
 // MOSFET module (active-HIGH PWM on D1) instead of the Puck's
 // onboard FET. Flash mode removed; breathing range narrowed to
 // match a relaxed human breathing rate. Brightness persisted via
-// E.setStorage(). Mains-powered: no auto-sleep by default;
+// the Storage module. Mains-powered: no auto-sleep by default;
 // optional 1-hour sleep timer enabled from app or button.
+//
+// v0.10.0: commands now arrive over a dedicated custom BLE
+// characteristic (not the Nordic UART), so the JS console can
+// stay on BLE permanently. This ends the console-detach problems
+// and means the Web IDE can always connect to reprogram.
+//
+// v0.10.3: FIX - command characteristic maxLen was 20 bytes, but
+// the app sends each command as ONE writeValue() of the whole
+// string. Commands longer than 20 bytes (mode/brightness/
+// breathSpeed/sleep) were rejected or truncated by the BLE stack,
+// so onWrite never received a complete newline-terminated line and
+// they were silently dropped. Only {"cmd":"test"} (15 bytes) fit.
+// maxLen raised to 100 so a full command lands in a single write.
+// The newline buffering is kept (harmless, and it still correctly
+// reassembles a long-write that the stack splits internally).
+//
+// v0.10.4: slowest breathing rate widened from 5s to 20s per cycle
+// (minHz 0.2 -> 0.05). Fastest unchanged at ~1.67s (maxHz 0.6).
+// The boot/default rate is the slow end, so the lamp now boots at
+// the 20s cycle.
 // =============================================================
+
+var FW_VERSION = "v0.10.4"; // bump on every firmware change
 
 var PWM_PIN = D1; // -> LR7843 module PWM input (active-HIGH)
 
@@ -14,8 +36,8 @@ var i, t, t_s, t_sleep, step = 0, active = true;
 
 // Configurable Parameters
 var cfg = {
-  minHz:   0.2,      // 5.0s/cycle - default breathing rate
-  maxHz:   0.6,      // 1.67s/cycle - 3x default, slider maximum
+  minHz:   0.05,     // 20.0s/cycle - slowest, and the boot/default breathing rate
+  maxHz:   0.6,      // 1.67s/cycle - slider maximum (fastest)
   sleepDelay: 60 * 60 // 1 hour in seconds - sleep timer if enabled
 };
 
@@ -26,7 +48,12 @@ var brightness = 0.4;
 var sleepEnabled = false;
 
 // Track current breathing hz so sleep-timer restart can resume correctly
-var currentHz = 0.2;
+var currentHz = 0.05; // matches cfg.minHz (20s/cycle) until the app changes it
+
+// Track the current lamp mode explicitly ("breathing" | "solid") so that a
+// breath-speed change doesn't force breathing while the lamp is in solid
+// mode. Only meaningful while active; ignored when the lamp is off.
+var currentMode = "breathing";
 
 // ---- Persistence ----
 // Espruino has no E.getStorage/E.setStorage. Flash persistence is the
@@ -112,38 +139,31 @@ function powerOff() {
 }
 
 // ---- Button ----
-// Short press  -> toggle lamp on/off
-// Long press (>3s) -> restore the BLE REPL for reprogramming (see boot)
-//
+// Short press -> toggle lamp on/off (restoring the last mode).
 // On Puck.js, BTN reads HIGH while held: press = rising, release = falling.
-// We watch BOTH edges and remember the moment of press, then compute the
-// hold duration ourselves on release. This avoids relying on e.lastTime
-// (which is `undefined` on the first-ever event and can reflect a bounce
-// rather than the press), so a quick tap can never be misread as a long
-// hold that spuriously restores the console.
-var pressTime = 0;
+// We act on the rising edge (press) for immediate response. No long-press
+// handling is needed any more: the console stays on BLE permanently in this
+// design, so the Web IDE can always connect to reprogram - no recovery
+// gesture required.
 setWatch(function(e) {
-  if (e.state) {           // rising edge = button pressed down
-    pressTime = e.time;
-    return;                // act on release, not press
-  }
-  // falling edge = button released
-  resetSleepTimer();       // any button interaction resets sleep countdown
-  var held = e.time - pressTime; // seconds button was held
-  if (pressTime && held > 3) {
-    reattachConsole();
-    return;                // deliberate long-press: don't also toggle
-  }
+  resetSleepTimer();        // any button interaction resets sleep countdown
   if (active) powerOff();
-  else        startBreathing(currentHz);
-}, BTN, {edge:"both", repeat:true, debounce:50});
+  else if (currentMode === "solid") allOn();
+  else startBreathing(currentHz);
+}, BTN, {edge:"rising", repeat:true, debounce:50});
 
 // ---- App-facing setters ----
 function setMode(mode) {
   resetSleepTimer();
-  if (mode === "off") powerOff();
-  else if (mode === "solid") allOn();
-  else if (mode === "breathing") startBreathing(currentHz);
+  if (mode === "off") {
+    powerOff();
+  } else if (mode === "solid") {
+    currentMode = "solid";
+    allOn();
+  } else if (mode === "breathing") {
+    currentMode = "breathing";
+    startBreathing(currentHz);
+  }
 }
 
 function setBreathSpeed(normalized) {
@@ -151,16 +171,20 @@ function setBreathSpeed(normalized) {
   var hz = cfg.minHz + n * (cfg.maxHz - cfg.minHz);
   currentHz = hz;
   resetSleepTimer();
-  if (active) startBreathing(hz);
+  // Only apply immediately if we're actually breathing. In solid mode we
+  // store the new speed for later but must NOT start breathing (that was
+  // the cause of the lamp flashing when solid was selected).
+  if (active && currentMode === "breathing") startBreathing(hz);
 }
 
 function setBrightness(val) {
   brightness = Math.max(0.05, Math.min(1.0, val));
   saveBrightness();
   resetSleepTimer();
-  if (active) {
-    // Breathing picks up on next tick; solid needs explicit update
-    if (!i) analogWrite(PWM_PIN, brightness);
+  if (active && currentMode === "solid") {
+    // Solid mode: apply new brightness immediately. (Breathing mode picks
+    // it up automatically on the next interval tick.)
+    analogWrite(PWM_PIN, brightness);
   }
 }
 
@@ -176,19 +200,33 @@ function setSleep(enabled) {
 }
 
 // ---- BLE command interface ----
-// Commands from phone app via Nordic UART (NRF UART service):
-//   {"cmd":"mode",       "value":"solid"|"breathing"|"off"}
-//   {"cmd":"breathSpeed","value":0.0-1.0}  // 0=5s/cycle, 1=1.67s/cycle
-//   {"cmd":"brightness", "value":0.0-1.0}  // persisted to flash
-//   {"cmd":"sleep",      "value":true|false} // enable/disable 1hr sleep timer
+// A dedicated writable characteristic receives commands. Unlike the Nordic
+// UART, a custom characteristic is NOT tied to the JS console/REPL, so the
+// console can stay on BLE permanently. That means:
+//   * commands always reach onWrite regardless of console state, and
+//   * the Web IDE can always connect to reprogram (no console detaching,
+//     no long-press recovery, no battery-pull dance).
 //
-// BLE MTU is 20 bytes per packet, so longer JSON arrives in fragments.
-// Buffer incoming data and parse only when a newline delimiter is received.
+// Service  UUID: 6e40aa01-b5a3-f393-e0a9-e50e24dcca9e
+// Command  UUID: 6e40aa02-b5a3-f393-e0a9-e50e24dcca9e  (write, phone -> Puck)
+//
+// Commands are newline-terminated JSON. The app sends each command as ONE
+// writeValue() of the whole string, so the characteristic maxLen MUST be
+// large enough to hold the longest command (see v0.10.3 note). onWrite
+// delivers an ArrayBuffer; we still accumulate on newline so a stack-split
+// long-write reassembles correctly.
+//   {"cmd":"mode",       "value":"solid"|"breathing"|"off"}
+//   {"cmd":"breathSpeed","value":0.0-1.0}
+//   {"cmd":"brightness", "value":0.0-1.0}
+//   {"cmd":"sleep",      "value":true|false}
+//   {"cmd":"test"}   // flash red LED 0.5s (comms self-test)
+var CMD_SERVICE = "6e40aa01-b5a3-f393-e0a9-e50e24dcca9e";
+var CMD_CHAR    = "6e40aa02-b5a3-f393-e0a9-e50e24dcca9e";
+
 var bleBuffer = "";
-NRF.on('data', function(data) {
-  digitalPulse(LED3, 1, 30); // blue blink = raw BLE data reached handler
+function handleCommandData(data) {
+  digitalPulse(LED3, 1, 30); // blue blink = command data reached handler
   bleBuffer += data;
-  // Process all complete newline-terminated messages in the buffer
   var nl;
   while ((nl = bleBuffer.indexOf('\n')) !== -1) {
     var msg = bleBuffer.substr(0, nl).trim();
@@ -200,52 +238,46 @@ NRF.on('data', function(data) {
       else if (cmd.cmd === "breathSpeed") setBreathSpeed(cmd.value);
       else if (cmd.cmd === "brightness")  setBrightness(cmd.value);
       else if (cmd.cmd === "sleep")       setSleep(cmd.value);
+      else if (cmd.cmd === "test")        digitalPulse(LED1, 1, 500); // comms self-test
     } catch (e) {
       // ignore malformed or incomplete fragments
     }
   }
-  // Safety: prevent buffer growing unbounded if no newline arrives
-  if (bleBuffer.length > 200) bleBuffer = "";
-});
+  if (bleBuffer.length > 200) bleBuffer = ""; // guard against runaway buffer
+}
+
+// Define the custom service. IMPORTANT: this MUST run inside onInit(),
+// otherwise the service is lost after save() / on the next boot.
+function setupServices() {
+  var svc = {};
+  svc[CMD_SERVICE] = {};
+  svc[CMD_SERVICE][CMD_CHAR] = {
+    // maxLen must exceed the longest command (~36 bytes incl. newline). At 20
+    // bytes the BLE stack rejected/truncated every command except the short
+    // {"cmd":"test"} - see the v0.10.3 note at the top of this file. 100 gives
+    // comfortable headroom whether or not the phone negotiates a larger MTU.
+    maxLen: 100,
+    writable: true,
+    onWrite: function(evt) {
+      // evt.data is an ArrayBuffer of bytes written by the phone.
+      handleCommandData(E.toString(evt.data));
+    }
+  };
+  // uart:true keeps the REPL available so the Web IDE can always connect.
+  NRF.setServices(svc, { uart: true });
+  // Keep the advertised name so the app's "Puck" name filter still matches.
+  NRF.setAdvertising({}, { name: "Puck.js " + NRF.getAddress().substr(-5).replace(":", "") });
+}
 
 // ---- Boot ----
-loadSettings();            // restore brightness + sleep preference from flash
-startBreathing(cfg.minHz); // default: on, 5s breathing cycle
-
-// ---- Move the REPL off the BLE UART ----
-// CRITICAL: By default Espruino routes incoming BLE UART data to the
-// JavaScript REPL (console). While the REPL owns the UART, NRF.on('data')
-// NEVER FIRES - the phone's JSON is fed to the interpreter as if typed at
-// a prompt instead of reaching our handler. This was the reason commands
-// never arrived even when a write appeared to succeed.
-//
-// E.setConsole(null, {force:true}) detaches the console so our data
-// handler receives everything. Trade-off: once this runs, the Puck can no
-// longer be reprogrammed over BLE (the Web IDE can't get a REPL) until you
-// recover it.
-//
-// RECOVERY: hold the button for ~3s to restore the console, THEN connect
-// the Web IDE to upload new firmware. We gate the detach behind a short
-// delay AND allow a long-press escape hatch so you're never locked out.
-var consoleDetached = false;
-var detachTimer = null;
-function detachConsole() {
-  detachTimer = null;
-  if (consoleDetached) return;
-  E.setConsole(null, { force: true });
-  consoleDetached = true;
+function onInit() {
+  print("Orb Lamp firmware " + FW_VERSION);
+  loadSettings();            // restore brightness + sleep preference from flash
+  setupServices();           // register the custom command characteristic
+  startBreathing(cfg.minHz); // default: on, 20s breathing cycle (slowest)
 }
-function reattachConsole() {
-  if (detachTimer) { detachTimer = clearTimeout(detachTimer); } // cancel pending detach
-  Bluetooth.setConsole(1); // force console back onto BLE for reprogramming
-  consoleDetached = false;
-  digitalPulse(LED2, 1, [100,100,100,100,100]); // green triple-blink = REPL back
-  // NOTE: after this, the console owns the BLE UART again, so the custom
-  // (JSON) command path stops working until reboot. Reboot or re-run
-  // detachConsole() to return to app control.
-}
-// (Long-press to restore the REPL is handled in the main button watch above.)
 
-// Detach a moment after boot so any in-flight IDE upload/save completes
-// first. If you need the REPL back, long-press the button.
-detachTimer = setTimeout(detachConsole, 3000);
+// onInit() runs automatically at power-on when the code is saved to flash.
+// Call it directly too so behaviour is identical when uploading without a
+// save (RAM-only upload), so you can test immediately after "Send".
+onInit();

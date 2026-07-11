@@ -28,11 +28,18 @@
     }
 
     html, body {
-      height: 100%;
+      min-height: 100%;
       background: var(--bg);
       color: var(--cream);
       font-family: system-ui, -apple-system, sans-serif;
-      overflow: hidden;
+    }
+
+    /* Let the page scroll when the controls are taller than the viewport
+       (small phones, or when browser chrome eats vertical space). The ambient
+       glow is position:fixed, so it stays put while the controls scroll. */
+    body {
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     /* Ambient glow — breathes with the lamp */
@@ -66,11 +73,13 @@
     .app {
       position: relative;
       z-index: 1;
-      height: 100vh;
+      min-height: 100vh;
+      min-height: 100dvh;   /* dvh accounts for mobile browser chrome */
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;  /* stack from top so nothing is pushed off */
+      gap: 22px;
       padding: 3vh 6vw 4vh;
       max-width: 440px;
       margin: 0 auto;
@@ -385,32 +394,6 @@
       opacity: 0.35;
       pointer-events: none;
     }
-
-    .test-btn {
-      width: 100%;
-      padding: 11px;
-      border-radius: 12px;
-      border: 1.5px solid var(--orb-dim);
-      background: transparent;
-      color: var(--cream-dim);
-      font-family: 'Cinzel', serif;
-      font-size: 0.72rem;
-      letter-spacing: 0.1em;
-      cursor: pointer;
-      transition: background 0.2s, color 0.2s, border-color 0.2s;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    .test-btn:not(:disabled):active {
-      background: rgba(240,60,60,0.18);
-      border-color: #e04545;
-      color: #ff8a8a;
-    }
-
-    .test-btn:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
-    }
   </style>
 </head>
 <body class="lamp-off">
@@ -429,10 +412,6 @@
   <div class="controls">
 
     <button class="connect-btn" id="connectBtn">Connect to Orb</button>
-
-    <!-- Comms self-test: flashes the Puck's RED LED for 0.5s. Proves end-to-end
-         communication independent of the lamp logic. -->
-    <button class="test-btn" id="testBtn" disabled>Flash red LED (comms test)</button>
 
     <div class="controls-inner disabled" id="controlsInner">
 
@@ -499,7 +478,7 @@
 <script>
 // ── App version ────────────────────────────────────────────────
 // Bump this on every change you want to be able to identify at runtime.
-var APP_VERSION = 'v0.11.2';
+var APP_VERSION = 'v0.11.3';
 
 // ── BLE UUIDs ──────────────────────────────────────────────────
 // Custom command service + characteristic (must match the firmware).
@@ -579,7 +558,6 @@ function setConnState(s, msg) {
   var dot     = document.getElementById('statusDot');
   var btn     = document.getElementById('connectBtn');
   var controls= document.getElementById('controlsInner');
-  var testBtn = document.getElementById('testBtn');
 
   dot.className = 'status-dot';
   btn.classList.remove('connected', 'busy');
@@ -589,7 +567,6 @@ function setConnState(s, msg) {
       setStatus(msg || 'Not connected');
       btn.textContent = 'Connect to Orb';
       controls.classList.add('disabled');
-      testBtn.disabled = true;
       break;
 
     case 'scanning':
@@ -598,7 +575,6 @@ function setConnState(s, msg) {
       setStatus(msg || 'Scanning…');
       btn.textContent = 'Cancel';
       controls.classList.add('disabled');
-      testBtn.disabled = true;
       break;
 
     case 'connecting':
@@ -607,7 +583,6 @@ function setConnState(s, msg) {
       setStatus(msg || 'Connecting…');
       btn.textContent = 'Cancel';
       controls.classList.add('disabled');
-      testBtn.disabled = true;
       break;
 
     case 'reconnecting':
@@ -616,7 +591,6 @@ function setConnState(s, msg) {
       setStatus(msg || 'Reconnecting…');
       btn.textContent = 'Cancel';
       controls.classList.add('disabled');
-      testBtn.disabled = true;
       break;
 
     case 'connected':
@@ -625,7 +599,6 @@ function setConnState(s, msg) {
       btn.textContent = 'Disconnect';
       btn.classList.add('connected');
       controls.classList.remove('disabled');
-      testBtn.disabled = false;
       break;
 
     case 'error':
@@ -633,7 +606,6 @@ function setConnState(s, msg) {
       setStatus(msg || 'Connection error');
       btn.textContent = 'Connect to Orb';
       controls.classList.add('disabled');
-      testBtn.disabled = true;
       break;
   }
 }
@@ -769,11 +741,6 @@ function send(obj) {
   pumpQueue();
 }
 
-// Comms self-test: {cmd:'test'} makes the firmware flash the red LED.
-function flashTest() {
-  send({ cmd: 'test' });
-}
-
 document.getElementById('connectBtn').addEventListener('click', function() {
   // Connected → user wants to disconnect. Reset the UI immediately rather
   // than waiting for the disconnect event (the event handler is idempotent).
@@ -884,13 +851,6 @@ function updateTrack(el) {
 function setStatus(msg) {
   document.getElementById('statusLine').textContent = msg;
 }
-
-// ── Comms test button ──────────────────────────────────────────
-document.getElementById('testBtn').addEventListener('click', function() {
-  if (!state.connected) { setStatus('Connect first'); return; }
-  setStatus('Comms test: flashing red LED');
-  flashTest();
-});
 
 // ── Init ───────────────────────────────────────────────────────
 document.getElementById('versionLine').textContent = 'App ' + APP_VERSION;
