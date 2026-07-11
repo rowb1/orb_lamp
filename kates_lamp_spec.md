@@ -4,7 +4,7 @@ A Puck.js-controlled mains-powered LED lamp with phone control, offering **solid
 
 **Repository:** https://github.com/rowb1/orb_lamp
 
-> **Status:** Draft. **LED current draw now confirmed: 0.35 A @ 5.00 V** (measured, UT658Dual USB tester + benchtop PSU; see §2.1). **MOSFET driver module selected: LR7843 opto-isolated module** (see §4.1) — changes grounding topology vs earlier drafts. **Puck supply resolved: 5V → 3.3V buck converter** (see §3.1, output 3.34V confirmed, dropout at 4.0V/recovery at 4.1V measured) — no coin cell in final build. **Breathing rate defined: 5 s/cycle default, slider triples to 1.67 s/cycle** (see §5). **Firmware (§5.1) adapted from Frankie's `jar7A.js`** with brightness control (default 0.4, persisted via `E.setStorage()`) — not yet bench-tested on assembled hardware.
+> **Status:** Draft. **LED current draw now confirmed: 0.35 A @ 5.00 V** (measured, UT658Dual USB tester + benchtop PSU; see §2.1). **MOSFET driver module selected: LR7843 opto-isolated module** (see §4.1) — changes grounding topology vs earlier drafts. **Puck supply resolved: 5V → 3.3V buck converter** (see §3.1, output 3.34V confirmed, dropout at 4.0V/recovery at 4.1V measured) — no coin cell in final build. **Breathing rate defined: 5 s/cycle default, slider triples to 1.67 s/cycle** (see §5). **Firmware (§5.1) adapted from Frankie's `jar7A.js`** with brightness control (default 0.4, persisted via `E.setStorage()`). **Drive circuit RESOLVED and bench-confirmed (2026-07-11):** the LR7843 *opto* module was rejected (can't switch a 5V load — see §4.1), and the adopted circuit is **direct gate drive** on the bare LR7843 with the opto removed (see §4.0). Real 5V LED array now runs at full brightness with smooth breathing; firmware unchanged at v0.10.2.
 
 ---
 
@@ -59,7 +59,7 @@ Both the LED and the Puck are powered from a single USB-A mains adaptor (5V DC),
 - **LED power domain:** USB 5V → LR7843 module load terminals (+/LOAD/−) → LED module. The USB supply GND connects to the LR7843 load − terminal only.
 - **Puck power domain:** USB 5V → 5V→3.3V buck converter → Puck 3V + GND pins. The buck converter GND connects to the LR7843 signal GND terminal only.
 
-The two grounds are **kept separate by the PC817 optocoupler** inside the LR7843 module. A wiring fault or MOSFET failure on the high-current LED side cannot propagate to the Puck. There is **no wire deliberately tying the USB 5V load GND to the Puck/buck GND** — the opto handles the signal crossing.
+The two grounds are **kept separate by the PC817 optocoupler** inside the LR7843 module. A wiring fault or MOSFET failure on the high-current LED side cannot propagate to the Puck. There is **no wire deliberately tying the USB 5V load GND to the Puck/buck GND** — the opto handles the signal crossing. *(Corrected in §3.2: a standard non-isolated buck bonds these grounds internally, so the isolation is nominal in this build.)*
 
 The USB adaptor must supply enough current for both domains: LED load (0.35 A) + Puck via buck (~30–50 mA estimated) + converter overhead. A **≥1 A (≥5W)** adaptor provides comfortable headroom.
 
@@ -89,19 +89,77 @@ The module shows selectable output taps (5V / 3.3V / 2.5V / 1.8V / 1.5V) via sol
 - Buck converter OUT+ → Puck 3V pin
 - Buck converter OUT− → Puck GND pin → LR7843 signal GND
 
-**Critical ground rule:** the buck converter output GND (= Puck GND) must connect **only** to the LR7843 signal GND terminal. Do not connect it to the USB supply GND or LR7843 load − terminal — that would tie the two isolated domains together and expose the Puck to the LED load circuit.
+**Critical ground rule:** the buck converter output GND (= Puck GND) must connect **only** to the LR7843 signal GND terminal. Do not connect it to the USB supply GND or LR7843 load − terminal — that would tie the two isolated domains together and expose the Puck to the LED load circuit. *(See §3.2 — with a non-isolated buck these grounds are already bonded internally, so this rule prevents a redundant extra wire but does not by itself achieve isolation.)*
+
+### 3.2 Grounding — signal-side common ground (and a correction to the isolation model)
+
+This subsection documents the grounding as actually wired on the assembled hardware, and resolves the battery-vs-USB question about the Puck GND wire.
+
+**The signal side always needs one common ground.** For PWM to reach the MOSFET, the Puck's D1 output must share a ground with the LR7843 signal GND terminal. When D1 goes HIGH it sources current through the module's 1 kΩ series resistor and the PC817 input LED, and that current returns to the module signal GND terminal — a loop that only completes if the module signal GND sits at the Puck's own ground potential. So **Puck GND and LR7843 signal GND must be connected in every power configuration**, battery or USB.
+
+**Battery build (CR2032):** black (Puck GND) → LR7843 signal GND is sufficient on its own. The Puck's ground reference is the coin cell's negative terminal — internally the same node as the Puck GND pad — so a single wire to the module signal GND closes the opto-LED loop. Confirmed correct.
+
+**USB build (buck converter — the final build):** the black wire cannot simply be moved from the module to "USB GND". Puck GND now has two jobs at once:
+
+1. **Power return** — the Puck draws current in via its 3V pin (from buck OUT+) and must return it to buck OUT−. Without Puck GND ↔ buck OUT−, the Puck never powers on.
+2. **Signal return** — the opto-LED loop still needs Puck GND ↔ LR7843 signal GND, exactly as on battery.
+
+Both are satisfied by making these one common signal-ground node — **buck OUT− = Puck GND = LR7843 signal GND** — which is exactly the §3.1 wiring line. In practice: run the black wire to buck OUT−, and add a short jumper from buck OUT− to the LR7843 signal GND terminal. Do **not** leave the module signal GND floating; if you do, the MOSFET never switches.
+
+**Correction to the "two isolated domains" model (§3, §4.1):** those sections state the PC817 keeps the Puck/buck ground electrically isolated from the USB 5V load ground, with no wire tying them. That holds only if the Puck is fed from an *isolated* DC-DC converter. The selected module is a standard **non-isolated buck** (shared input/output ground): buck IN− (USB 5V GND, load side) and buck OUT− (Puck signal ground) are the same node internally. So in this build the load ground and the signal ground are already bonded *through the buck converter* — the optocoupler's galvanic isolation exists on the module but is **not realised at system level**.
+
+This is harmless. A single common-ground, low-side-switch design is completely standard and safe at 5V, and the LR7843 module operates correctly with a common ground. The only practical consequence is that the fault-isolation benefit described in §3/§4.1 does not exist in this build — a fault on the LED side would share ground with the Puck. Achieving true isolation would require an *isolated* DC-DC converter for the Puck (or powering the Puck from a separate supply / its coin cell); for a 5V ambient lamp this is unnecessary.
+
+**Net wiring, final USB build (effectively one ground):**
+
+- **Common ground node:** USB 5V GND = buck IN− = buck OUT− = Puck GND = LR7843 signal GND
+- **LR7843 load −:** also to USB 5V GND (same node)
+- **LR7843 load +:** USB 5V (+); **LOAD:** LED red (+); LED black (−) switched internally by the MOSFET
+- **Puck 3V:** buck OUT+; **Puck D1:** LR7843 PWM input
 
 ---
 
 ## 4. Drive circuit
 
-### 4.1 Required: LR7843 opto-isolated MOSFET module (low-side switch)
+### 4.0 ADOPTED: LR7843 direct gate drive (opto removed) — bench-confirmed 2026-07-11
+
+**This is the circuit in the final build.** The opto module (§4.1) was bench-rejected because it cannot fully switch a 5V load. The adopted circuit reuses the same LR7843 module *board* as a physical mount, but with the PC817 optocoupler **desoldered** and the Puck driving the MOSFET gate **directly**.
+
+**What was done:**
+
+- **Removed the PC817 optocoupler** from the module.
+- **Soldered D1 to the former opto emitter pad**, which connects through the board's onboard **100Ω** (gate series resistor) to the MOSFET gate, and has the onboard **4.7kΩ** to ground as the gate pulldown. D1 now drives the gate directly, 0V ↔ full rail, bypassing the load-derived gate divider that starved the opto version.
+- Reuses the board's **100Ω** and **4.7kΩ** — **zero added components**. The board's V+ gate pull-up is orphaned when the opto is removed (no floating partial-on). The indicator LED still works.
+
+**Final drive wiring:**
+
+```
+  USB 5V (+) ─────────────► module "+"  ──► LED red (+)
+  USB 5V GND (-) ─────────► module "-"  (= MOSFET source = common GND)
+  LED black (-) ──────────► module "LOAD" (= MOSFET drain)
+  Puck D1 (yellow) ───────► former opto EMITTER pad ─[100Ω]─► MOSFET gate
+                                                      └─[4.7kΩ]─► GND (pulldown)
+  Puck 3V ────────────────► 3.3V buck OUT+
+  Puck GND (black) ───────► common GND
+```
+
+- **Load path (low-side switch):** V+ → LED → drain → MOSFET → GND. Gate HIGH → FET on → LED full bright; gate LOW → off. **Active-HIGH, matches firmware — no code change.**
+- **Common ground (single node):** USB 5V GND = buck OUT− = Puck GND = MOSFET source. The buck is non-isolated and the opto is gone, so there is no isolation barrier — this is one ground (see §3.2).
+- **3.3V gate drive is sufficient** for the LR7843 at the 0.35 A load. (A sagging 2.8 V coin cell was *not* — the final build powers the Puck from the buck.)
+
+> **Critical assembly note (cost several bench hours):** the LED must be wired **red → `+`, black → `LOAD`** (in *series*, V+→LED→drain). Wiring it `LOAD`→`GND` puts the LED **in parallel with the FET**, so the FET shorts it out when it turns on (LED off when gate high) and only a ~1 mA indicator-pull-up trickle lights it when the FET is off (constant dim). This miswire mimics an "inverting, always-dim" module exactly — see `ble_debug.md`.
+
+---
+
+### 4.1 REJECTED: LR7843 opto-isolated MOSFET module (low-side switch)
+
+> **STATUS: BENCH-REJECTED at 5 V (2026-07-11).** This module cannot fully switch a 5 V load: it derives the MOSFET gate bias from the *load* supply via a resistor divider and is specced for 6–28 V, so at 5 V the gate only reaches ~2.5 V (right at the LR7843 threshold) and the FET never fully enhances → LED stuck dim, LOAD terminal swinging only ~1.3–2.5 V instead of to ~0 V. The 5 V LED array can't tolerate a higher rail (fixed onboard current-limiting resistors), so raising the load supply to fix the gate bias was not viable. Superseded by the direct-drive mod in **§4.0**. The analysis below is retained as the rationale and for anyone using these modules at their intended 6–28 V.
 
 **Why this module was chosen:**
 - The LR7843 N-channel MOSFET is logic-level compatible, fully enhanced at V_GS = 2.5V — so the Puck's 3.3V GPIO drives it directly without a level shifter.
 - R_DS(on) of 3.3 mΩ is extremely low; at 0.35 A the power dissipated in the switch is negligible (~0.4 mW), so no heatsinking is needed.
 - Rated 15 A continuous (161 A peak) — the 0.35 A load is less than 2.5% of its capacity, giving enormous headroom.
-- The onboard **PC817 optocoupler** electrically isolates the Puck's signal ground from the LED power ground. This protects the Puck from any fault on the high-current side, and removes the need to deliberately tie the two grounds together in the wiring.
+- The onboard **PC817 optocoupler** electrically isolates the Puck's signal ground from the LED power ground. This protects the Puck from any fault on the high-current side, and removes the need to deliberately tie the two grounds together in the wiring. *(Caveat — see §3.2: the non-isolated buck bonds signal and load grounds anyway, so this isolation is not realised at system level. Harmless for a 5V lamp.)*
 
 **Why the common-ground assumption from earlier drafts no longer applies:**
 
@@ -137,13 +195,15 @@ The Puck PWM pin → 1 kΩ series resistor (on module) → PC817 LED. When the P
   USB supply GND and Puck GND are NOT connected together.
 ```
 
+*(Diagram above reflects the rejected opto wiring. The adopted build uses §4.0: opto removed, single common ground, LED wired `+`→`LOAD`.)*
+
 **Notes on the circuit:**
 - **No R_gate or R_pulldown needed externally** — both are already on the module (1 kΩ input resistor, 4.7 kΩ gate pulldown).
 - **No R_L** — the LED module's onboard resistors (270/240) handle current limiting.
 - **Active HIGH logic** — PWM high = LED on, PWM low = LED off. Matches the Puck's default GPIO state on boot (low), so the LED is off-by-default safely.
 - **PWM frequency caution** — the PC817 optocoupler has a relatively slow response time (~3–18 µs). This limits clean PWM to roughly **1–5 kHz maximum** before the opto can no longer follow the signal faithfully. This is well above the frequency needed to avoid visible flicker (~100–200 Hz minimum), so breathing mode is fine. Test on the bench to confirm the upper limit with this specific module batch.
-- **Load supply range** — the module supports 6–28V on the load side per the manufacturer. At 5V load this is slightly below the stated minimum; however, the gate is biased at ~50% of supply (~2.5V), which is right at the LR7843's threshold. In practice it works at 5V — confirm on the bench. If gate drive proves marginal, feeding the load + terminal from a slightly higher voltage (e.g. a 6V USB-C PD supply) would give more V_GS headroom, but this is unlikely to be necessary.
-- **Puck GND isolation** — do **not** run a wire from USB 5V GND to Puck GND. The opto provides the signal crossing; joining the grounds would defeat the isolation and expose the Puck to the load circuit.
+- **Load supply range** — the module supports 6–28V on the load side per the manufacturer. At 5V load this is below the stated minimum; the gate is biased at ~V_load/2 (~2.5V), right at the LR7843's threshold. **BENCH RESULT: it did NOT adequately switch at 5V** — the FET stayed in its linear region (LOAD terminal ~1.3–2.5V, LED dim). The predicted marginal gate drive was real. Feeding the load + terminal from ≥6V would fix the gate bias but overdrives the fixed-5V LED array, so this path was abandoned in favour of §4.0.
+- **Puck GND isolation** — *(this was the design intent for the opto version; it does not hold in this build — see §3.2. The non-isolated buck already bonds the grounds, and §4.0 removes the opto entirely, giving one common ground.)*
 
 ---
 
@@ -339,17 +399,17 @@ startBreathing(cfg.minHz); // default: 5s breathing cycle
 
 ## 7. Open questions / TBC
 
-**Resolved by bench measurement, LED datasheet, MOSFET module selection, Puck supply decision, breathing-rate research, Frankie source adaptation, and brightness design decision:** current draw (0.35 A @ 5.00 V, measured), built-in current limiting (yes, no R_L), drive method (LR7843 opto-isolated MOSFET module), supply sizing (≥1 A USB adaptor), PWM dimmability (yes, subject to opto bandwidth), thermal limit (airflow needed >30 min), Puck GND isolation (PC817 opto on LR7843 module), Puck supply method (5V→3.3V buck converter — no CR2032 in final build), default breathing rate (5 s/cycle, 0.2 Hz, tripled to 1.67 s/cycle at slider max), firmware base (adapted from Frankie's `jar7A.js`), brightness control (0–1 scalar, default 0.4, persisted via `E.setStorage()`, sets sine peak and solid level).
+**Resolved by bench measurement, LED datasheet, MOSFET module selection, Puck supply decision, breathing-rate research, Frankie source adaptation, and brightness design decision:** current draw (0.35 A @ 5.00 V, measured), built-in current limiting (yes, no R_L), drive method (**LR7843 direct gate drive, opto removed — §4.0; opto-module approach rejected at 5V — §4.1**), supply sizing (≥1 A USB adaptor), PWM dimmability (yes — bench-confirmed smooth breathing on the real LED), thermal limit (airflow needed >30 min), grounding (single common ground — non-isolated buck + opto removed, §3.2), Puck supply method (5V→3.3V buck converter — no CR2032 in final build), default breathing rate (5 s/cycle, 0.2 Hz, tripled to 1.67 s/cycle at slider max), firmware base (adapted from Frankie's `jar7A.js`), brightness control (0–1 scalar, default 0.4, persisted via `E.setStorage()`, sets sine peak and solid level).
 
 Still open:
 
 1. **Buck converter output — PARTIALLY VALIDATED.** Output measured 3.34V (no load) ✅. Dropout confirmed at 4.0V input; recovery at 4.1V — minimum safe USB supply input is **4.1V**. Remaining: measure adaptor output with LED running, confirm stays ≥4.1V.
 2. **USB adaptor voltage under load** — confirm stays ≥4.1V with LED running (0.35 A).
-3. **PWM carrier frequency** — `analogWrite(PWM_PIN, val)` uses Espruino's default carrier. Confirm it falls within LR7843 module's ~1–5 kHz opto bandwidth (§4.1) and above visible flicker threshold (≥100–200 Hz). Set explicit `freq` option if needed.
-4. **Gate drive at 5V load supply** — module rated 6–28V; 5V gives ~2.5V gate bias at threshold. Verify clean switching on bench.
+3. **PWM carrier frequency — RESOLVED.** With direct gate drive (opto removed), Espruino's default `analogWrite(PWM_PIN, val)` carrier gives smooth, flicker-free breathing on the real LED. No explicit `freq` needed. (The old ~1–5 kHz opto-bandwidth constraint no longer applies — there is no opto.)
+4. **Gate drive — RESOLVED (approach changed).** The opto module's 5V gate bias was inadequate (§4.1). Adopted direct gate drive (§4.0): D1 puts a clean ~3.2V on the LR7843 gate, fully switching the 0.35 A load. Bench-confirmed full brightness.
 5. **Enclosure / form factor** — must allow airflow around LED housing per thermal note.
 6. **Safety auto-off duration** — 30 min proposed; confirm against intended use and ventilation.
-7. **Firmware bench validation** — not yet run on Kate's actual hardware (LR7843 + buck-powered Puck). Test: PWM carrier through opto, breathing smoothness at 5s and 1.67s, brightness scaling, `E.setStorage()` persistence across power cycles, button/safety/standby logic.
+7. **Firmware bench validation — MOSTLY DONE.** Verified end-to-end on the real hardware (direct-drive LR7843 + buck-powered Puck): full-brightness solid, smooth breathing. Still worth a deliberate pass on `E.setStorage()` brightness persistence across power cycles and the safety/standby timers.
 8. **BLE command interface** — `onBleCommand` stub needs wiring to GATT/Nordic UART service once phone app (§6) is built.
 
 ---
@@ -361,10 +421,10 @@ Still open:
 | 1 | Espruino Puck.js v2.1 | Controller; powered from buck converter output, no CR2032 fitted |
 | 1 | USB-A mains adaptor, 5V **≥1 A (≥5W)** | Common supply for LED and Puck buck converter |
 | 1 | 5V Circular LED Module, 47mm 24-LED (batch 3011-1) | 0.35 A @ 5.00 V measured, integrated resistors, USB-A leads |
-| 1 | LR7843 opto-isolated MOSFET module | PC817 opto + LR7843 N-ch MOSFET; logic-level, 15 A continuous, isolated signal/load grounds |
+| 1 | LR7843 MOSFET module, **modified** | PC817 opto **removed**; D1 drives the gate directly via the board's onboard 100Ω (→ gate) with the onboard 4.7kΩ pulldown. Board reused as FET mount + screw terminals. See §4.0. |
 | 1 | 5V→3.3V buck converter module | Solder-bridge selectable output; confirm 3.3V ± 0.1V under load before connecting Puck |
 | 2 | Decoupling caps: 100 µF electrolytic + 100 nF ceramic | Fitted at Puck 3V/GND pins to suppress buck ripple |
-| — | Wiring | Buck: IN from USB 5V load side; OUT to Puck 3V+GND. LR7843: PWM+signal GND from Puck; load +/− from USB 5V load side. Buck OUT GND and USB load GND must NOT be joined. |
+| — | Wiring | Single common ground (USB GND = buck OUT− = Puck GND = MOSFET source). **LED: red → module `+`, black → module `LOAD`** (series, low-side). D1 → former opto emitter pad → onboard 100Ω → gate. See §4.0 wiring block. |
 
-*Gate resistor, gate pulldown, and MOSFET are all integrated on the LR7843 module — no discrete passives required for the drive circuit.*
+*Gate resistor (100Ω) and pulldown (4.7kΩ) are the module's existing onboard parts, reused after removing the opto — no discrete passives added.*
 *No external LED current-limiting resistor required — handled on LED module.*
