@@ -23,6 +23,7 @@
       --cream-dim: #a08c6e;
       --glass:     rgba(255,255,255,0.06);
       --green:     #4caf82;
+      --red:       #e04545;
       --breath-s:  5s;
     }
 
@@ -100,12 +101,56 @@
       text-transform: uppercase;
     }
 
+    /* Connection status: a coloured dot + text, driven by the state machine */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 1em;
+    }
+
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--cream-dim);
+      opacity: 0.5;
+      transition: background 0.3s, box-shadow 0.3s, opacity 0.3s;
+    }
+
+    .status-dot.dot-connected {
+      background: var(--green);
+      opacity: 1;
+      box-shadow: 0 0 8px rgba(76,175,130,0.7);
+    }
+
+    .status-dot.dot-busy {
+      background: var(--orb);
+      opacity: 1;
+      animation: dot-pulse 1.1s ease-in-out infinite;
+    }
+
+    .status-dot.dot-error {
+      background: var(--red);
+      opacity: 1;
+      box-shadow: 0 0 8px rgba(224,69,69,0.7);
+    }
+
+    @keyframes dot-pulse {
+      0%, 100% { box-shadow: 0 0 3px rgba(240,165,0,0.5);  opacity: 0.55; }
+      50%       { box-shadow: 0 0 12px rgba(240,165,0,0.95); opacity: 1;    }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .status-dot.dot-busy { animation: none; }
+    }
+
     .status-line {
       font-size: 0.72rem;
       letter-spacing: 0.12em;
       color: var(--cream-dim);
       text-transform: uppercase;
-      min-height: 1em;
     }
 
     .version-line {
@@ -308,7 +353,7 @@
       font-size: 0.88rem;
       letter-spacing: 0.14em;
       cursor: pointer;
-      transition: background 0.25s, box-shadow 0.25s;
+      transition: background 0.25s, box-shadow 0.25s, border-color 0.25s, color 0.25s;
       -webkit-tap-highlight-color: transparent;
     }
 
@@ -320,6 +365,13 @@
       border-color: var(--green);
       color: var(--green);
       background: rgba(76,175,130,0.08);
+    }
+
+    /* Cancel affordance while busy (scanning / connecting / reconnecting) */
+    .connect-btn.busy {
+      border-color: var(--cream-dim);
+      color: var(--cream-dim);
+      background: rgba(255,255,255,0.04);
     }
 
     .controls-inner {
@@ -359,60 +411,6 @@
       opacity: 0.35;
       cursor: not-allowed;
     }
-
-    /* Transport A/B diagnostics strip */
-    .transport-strip {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-    }
-
-    .transport-label {
-      font-size: 0.62rem;
-      letter-spacing: 0.16em;
-      color: var(--cream-dim);
-      text-transform: uppercase;
-    }
-
-    .transport-seg {
-      display: inline-flex;
-      border: 1px solid var(--orb-dim);
-      border-radius: 10px;
-      overflow: hidden;
-    }
-
-    .seg-btn {
-      padding: 6px 14px;
-      border: none;
-      background: transparent;
-      color: var(--cream-dim);
-      font-family: 'Cinzel', serif;
-      font-size: 0.68rem;
-      letter-spacing: 0.08em;
-      cursor: pointer;
-      transition: background 0.2s, color 0.2s;
-      -webkit-tap-highlight-color: transparent;
-    }
-
-    .seg-btn.active {
-      background: rgba(240,165,0,0.14);
-      color: var(--orb);
-    }
-
-    .seg-btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
-    }
-
-    .transport-hint {
-      font-size: 0.6rem;
-      letter-spacing: 0.06em;
-      color: var(--cream-dim);
-      text-align: center;
-      min-height: 1em;
-      opacity: 0.8;
-    }
   </style>
 </head>
 <body class="lamp-off">
@@ -421,7 +419,10 @@
   <header>
     <img src="icon-192.png" class="orb-icon" alt="Orb Lamp">
     <h1>Orb Lamp</h1>
-    <div class="status-line" id="statusLine">Not connected</div>
+    <div class="status-row">
+      <span class="status-dot" id="statusDot"></span>
+      <div class="status-line" id="statusLine">Not connected</div>
+    </div>
     <div class="version-line" id="versionLine"></div>
   </header>
 
@@ -429,9 +430,8 @@
 
     <button class="connect-btn" id="connectBtn">Connect to Orb</button>
 
-    <!-- Comms self-test: flashes the Puck's RED LED for 0.5s. Works in both
-         transports and proves end-to-end communication independent of the
-         lamp logic. -->
+    <!-- Comms self-test: flashes the Puck's RED LED for 0.5s. Proves end-to-end
+         communication independent of the lamp logic. -->
     <button class="test-btn" id="testBtn" disabled>Flash red LED (comms test)</button>
 
     <div class="controls-inner disabled" id="controlsInner">
@@ -484,7 +484,7 @@
         <div class="row">
           <div>
             <div class="row-label">Sleep timer</div>
-            <div class="row-sublabel">Turn off after 1 hour of inactivity</div>
+            <div class="row-sublabel">Auto-off after 30 min (safety)</div>
           </div>
           <button class="toggle" id="sleepToggle" aria-label="Sleep timer"></button>
         </div>
@@ -498,7 +498,7 @@
 <script>
 // ── App version ────────────────────────────────────────────────
 // Bump this on every change you want to be able to identify at runtime.
-var APP_VERSION = 'v0.10.0';
+var APP_VERSION = 'v0.11.1';
 
 // ── BLE UUIDs ──────────────────────────────────────────────────
 // Custom command service + characteristic (must match the firmware).
@@ -508,10 +508,19 @@ var APP_VERSION = 'v0.10.0';
 var CMD_SERVICE = '6e40aa01-b5a3-f393-e0a9-e50e24dcca9e';
 var CMD_CHAR    = '6e40aa02-b5a3-f393-e0a9-e50e24dcca9e';
 
+// ── Connection tuning ──────────────────────────────────────────
+var CONNECT_TIMEOUT_MS = 12000; // guard against gatt.connect() hanging forever
+var RECONNECT_MAX      = 4;     // auto-reconnect attempts on an unexpected drop
+var RECONNECT_BASE_MS  = 600;   // backoff step; delay = BASE * attempt number
+
 // ── State ──────────────────────────────────────────────────────
 var state = {
-  connected:   false,
-  on:          false,
+  connected:   false,   // true only while GATT is up and ready to write
+  // The firmware boots ON (breathing) in onInit(). The app must default to the
+  // SAME state, otherwise syncAll() would push {mode:'off'} on connect and turn
+  // a happily-breathing lamp off. (Before the firmware maxLen fix that 'off'
+  // was silently dropped as too long; now it lands, so the default matters.)
+  on:          true,
   mode:        'breathing',
   brightness:  0.40,
   breathNorm:  0,
@@ -519,6 +528,17 @@ var state = {
 };
 
 var bleDevice = null, bleServer = null, bleCmdChar = null;
+
+// Connection state machine: idle | scanning | connecting | connected |
+// reconnecting | error. All UI (dot, status text, button, control enablement)
+// is derived from this in setConnState() so the states can never disagree.
+var connState = 'idle';
+
+// Distinguishes a user-requested teardown from an unexpected radio drop, so we
+// only auto-reconnect on the latter.
+var userInitiatedDisconnect = false;
+var reconnectAttempts = 0;
+var reconnectTimer = null;
 
 // ── BLE write queue ────────────────────────────────────────────
 // Android permits only ONE outstanding GATT operation at a time. Firing
@@ -530,7 +550,8 @@ var txQueue = [], txBusy = false;
 function pumpQueue() {
   if (txBusy || txQueue.length === 0) return;
   if (!bleCmdChar || !bleServer || !bleServer.connected) {
-    setStatus('Not connected — reconnect');
+    // Not writable right now. Drop the backlog; the reconnect flow (if any)
+    // owns the status line, so don't stomp it here.
     txQueue.length = 0;
     return;
   }
@@ -540,32 +561,201 @@ function pumpQueue() {
     .then(function() { txBusy = false; pumpQueue(); })
     .catch(function(e) {
       txBusy = false;
-      setStatus('Write failed: ' + (e && e.message ? e.message : e));
-      console.error('writeValue rejected:', e);
       txQueue.length = 0;
+      console.error('writeValue rejected:', e);
+      // A failed write usually means the link is going down; the
+      // gattserverdisconnected handler will drive reconnect. Only surface a
+      // message if we still believe we're connected.
+      if (connState === 'connected') setStatus('Write failed — retrying link');
     });
 }
 
+// ── Connection state machine ───────────────────────────────────
+function setConnState(s, msg) {
+  connState = s;
+  state.connected = (s === 'connected');
+
+  var dot     = document.getElementById('statusDot');
+  var btn     = document.getElementById('connectBtn');
+  var controls= document.getElementById('controlsInner');
+  var testBtn = document.getElementById('testBtn');
+
+  dot.className = 'status-dot';
+  btn.classList.remove('connected', 'busy');
+
+  switch (s) {
+    case 'idle':
+      setStatus(msg || 'Not connected');
+      btn.textContent = 'Connect to Orb';
+      controls.classList.add('disabled');
+      testBtn.disabled = true;
+      break;
+
+    case 'scanning':
+      dot.classList.add('dot-busy');
+      btn.classList.add('busy');
+      setStatus(msg || 'Scanning…');
+      btn.textContent = 'Cancel';
+      controls.classList.add('disabled');
+      testBtn.disabled = true;
+      break;
+
+    case 'connecting':
+      dot.classList.add('dot-busy');
+      btn.classList.add('busy');
+      setStatus(msg || 'Connecting…');
+      btn.textContent = 'Cancel';
+      controls.classList.add('disabled');
+      testBtn.disabled = true;
+      break;
+
+    case 'reconnecting':
+      dot.classList.add('dot-busy');
+      btn.classList.add('busy');
+      setStatus(msg || 'Reconnecting…');
+      btn.textContent = 'Cancel';
+      controls.classList.add('disabled');
+      testBtn.disabled = true;
+      break;
+
+    case 'connected':
+      dot.classList.add('dot-connected');
+      setStatus(msg || 'Connected');
+      btn.textContent = 'Disconnect';
+      btn.classList.add('connected');
+      controls.classList.remove('disabled');
+      testBtn.disabled = false;
+      break;
+
+    case 'error':
+      dot.classList.add('dot-error');
+      setStatus(msg || 'Connection error');
+      btn.textContent = 'Connect to Orb';
+      controls.classList.add('disabled');
+      testBtn.disabled = true;
+      break;
+  }
+}
+
 // ── Connect / disconnect ───────────────────────────────────────
+function withTimeout(promise, ms, label) {
+  return new Promise(function(resolve, reject) {
+    var to = setTimeout(function() {
+      reject(new Error((label || 'Operation') + ' timed out'));
+    }, ms);
+    promise.then(
+      function(v) { clearTimeout(to); resolve(v); },
+      function(e) { clearTimeout(to); reject(e); }
+    );
+  });
+}
+
+// The GATT half of a connection: connect, resolve the command characteristic,
+// then go live. Shared by the first connect and every reconnect attempt.
+function establishGatt(device) {
+  return withTimeout(device.gatt.connect(), CONNECT_TIMEOUT_MS, 'Connect')
+    .then(function(s)  { bleServer = s; return s.getPrimaryService(CMD_SERVICE); })
+    .then(function(sv) { return sv.getCharacteristic(CMD_CHAR); })
+    .then(function(c)  { bleCmdChar = c; onConnected(); });
+}
+
 function bleConnect() {
-  setStatus('Scanning…');
+  setConnState('scanning');
   return navigator.bluetooth.requestDevice({
     filters: [{ namePrefix: 'Puck' }, { namePrefix: 'puck' }],
     optionalServices: [CMD_SERVICE]
   })
   .then(function(d) {
     bleDevice = d;
-    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
-    setStatus('Connecting…');
-    return d.gatt.connect();
-  })
-  .then(function(s)  { bleServer = s; return s.getPrimaryService(CMD_SERVICE); })
-  .then(function(sv) { return sv.getCharacteristic(CMD_CHAR); })
-  .then(function(c)  { bleCmdChar = c; onConnected(); });
+    // One listener per device object; reused across reconnects.
+    bleDevice.addEventListener('gattserverdisconnected', onGattDisconnected);
+    setConnState('connecting');
+    return establishGatt(d);
+  });
 }
 
 function bleDisconnect() {
-  if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
+  if (bleDevice && bleDevice.gatt && bleDevice.gatt.connected) {
+    bleDevice.gatt.disconnect();
+  }
+}
+
+// Tear everything down to a clean, idle, not-connected UI.
+function resetToIdle(msg) {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  reconnectAttempts = 0;
+  bleCmdChar = null;
+  bleServer = null;
+  txQueue.length = 0;
+  txBusy = false;
+  setConnState('idle', msg);
+}
+
+function onConnected() {
+  reconnectAttempts = 0;
+  userInitiatedDisconnect = false;
+  setConnState('connected');
+  // Let Android's GATT stack settle after discovery before the first write.
+  // The syncAll writes are queued and sent one at a time, so they won't
+  // collide with "GATT operation already in progress". This also re-pushes
+  // full state after an auto-reconnect, so the lamp matches the UI again.
+  setTimeout(syncAll, 800);
+}
+
+// Fired by the radio on ANY disconnect — user-requested or a dropout.
+function onGattDisconnected() {
+  bleCmdChar = null;
+  bleServer = null;
+  txQueue.length = 0;
+  txBusy = false;
+
+  if (userInitiatedDisconnect) { resetToIdle(); return; }
+  attemptReconnect();
+}
+
+// Reuse the already-picked device (no re-prompt) with a capped backoff.
+function attemptReconnect() {
+  if (!bleDevice || userInitiatedDisconnect) { resetToIdle(); return; }
+
+  if (reconnectAttempts >= RECONNECT_MAX) {
+    // Give up gracefully; leave a tappable path back (button = Connect to Orb).
+    reconnectAttempts = 0;
+    setConnState('error', 'Lost connection — tap Connect to retry');
+    return;
+  }
+
+  reconnectAttempts++;
+  setConnState('reconnecting',
+    'Reconnecting… (' + reconnectAttempts + '/' + RECONNECT_MAX + ')');
+
+  var delay = RECONNECT_BASE_MS * reconnectAttempts;
+  reconnectTimer = setTimeout(function() {
+    reconnectTimer = null;
+    if (userInitiatedDisconnect || !bleDevice) { resetToIdle(); return; }
+    establishGatt(bleDevice).catch(function(e) {
+      console.error('reconnect attempt failed:', e);
+      if (userInitiatedDisconnect) { resetToIdle(); return; }
+      attemptReconnect(); // next attempt, or give up if capped
+    });
+  }, delay);
+}
+
+// Map raw Web Bluetooth errors to something a human can act on.
+function friendlyError(e) {
+  if (!e) return 'Connection error';
+  var name = e.name || '';
+  var msg  = e.message || String(e);
+  if (name === 'SecurityError')  return 'Bluetooth blocked — needs HTTPS + permission';
+  if (name === 'NetworkError')   return 'Connection failed — is the orb powered and near?';
+  if (name === 'NotSupportedError') return 'Web Bluetooth not supported here';
+  if (/timed out/i.test(msg))    return 'Connect timed out — try again';
+  return msg;
+}
+
+// The chooser being dismissed (or finding nothing) throws NotFoundError; treat
+// it as a quiet no-op rather than a scary error.
+function isPickerCancel(e) {
+  return e && e.name === 'NotFoundError';
 }
 
 // ── Send a command ─────────────────────────────────────────────
@@ -584,62 +774,45 @@ function flashTest() {
 }
 
 document.getElementById('connectBtn').addEventListener('click', function() {
-  if (state.connected) {
-    // Close, then reset the UI immediately rather than waiting for the
-    // disconnect event (which is idempotent if it also fires later).
+  // Connected → user wants to disconnect. Reset the UI immediately rather
+  // than waiting for the disconnect event (the event handler is idempotent).
+  if (connState === 'connected') {
+    userInitiatedDisconnect = true;
     try { bleDisconnect(); } catch (e) { console.error(e); }
-    onDisconnected();
+    resetToIdle();
     return;
   }
+
+  // Mid-flight (connecting / reconnecting) → treat the button as Cancel.
+  if (connState === 'connecting' || connState === 'reconnecting' || connState === 'scanning') {
+    userInitiatedDisconnect = true;
+    try { bleDisconnect(); } catch (e) { console.error(e); }
+    resetToIdle('Cancelled');
+    return;
+  }
+
+  // Idle / error → start a fresh connection.
   if (!navigator.bluetooth) {
-    setStatus('Web Bluetooth not supported');
+    setConnState('error', 'Web Bluetooth not supported');
     return;
   }
+  userInitiatedDisconnect = false;
+  reconnectAttempts = 0;
   bleConnect().catch(function(e) {
-    setStatus('Connect failed: ' + (e && e.message ? e.message : e));
+    if (isPickerCancel(e)) { resetToIdle(); return; }
     console.error(e);
+    setConnState('error', friendlyError(e));
   });
 });
 
-function onConnected() {
-  state.connected = true;
-  document.getElementById('connectBtn').textContent = 'Disconnect';
-  document.getElementById('connectBtn').classList.add('connected');
-  document.getElementById('controlsInner').classList.remove('disabled');
-  document.getElementById('testBtn').disabled = false;
-  setStatus('Connected');
-  // Let Android's GATT stack finish settling after discovery before the
-  // first write. 500ms is marginal on some stacks; 800ms is safer. The
-  // four syncAll writes are now queued and sent one at a time, so they
-  // no longer collide with "GATT operation already in progress".
-  setTimeout(syncAll, 800);
-}
-
-function onDisconnected() {
-  state.connected = false;
-  bleCmdChar = null;
-  bleServer = null;
-  txQueue.length = 0;
-  txBusy = false;
-  document.getElementById('connectBtn').textContent = 'Connect to Orb';
-  document.getElementById('connectBtn').classList.remove('connected');
-  document.getElementById('controlsInner').classList.add('disabled');
-  document.getElementById('testBtn').disabled = true;
-  setStatus('Disconnected');
-}
-
-function disconnect() {
-  bleDisconnect();
-}
-
 function syncAll() {
-  // Send mode FIRST. Now that the firmware guards setBreathSpeed/setBrightness
-  // by currentMode, establishing the mode up front means the later parameter
+  // Send mode FIRST. The firmware guards setBreathSpeed/setBrightness by
+  // currentMode, so establishing the mode up front means later parameter
   // commands apply cleanly without briefly forcing breathing in solid mode.
-  send({ cmd: 'mode',       value: state.on ? state.mode : 'off' });
-  send({ cmd: 'brightness', value: state.brightness });
-  send({ cmd: 'breathSpeed',value: state.breathNorm });
-  send({ cmd: 'sleep',      value: state.sleepOn });
+  send({ cmd: 'mode',        value: state.on ? state.mode : 'off' });
+  send({ cmd: 'brightness',  value: state.brightness });
+  send({ cmd: 'breathSpeed', value: state.breathNorm });
+  send({ cmd: 'sleep',       value: state.sleepOn });
 }
 
 // ── Power toggle ───────────────────────────────────────────────
@@ -721,6 +894,11 @@ document.getElementById('versionLine').textContent = 'App ' + APP_VERSION;
 updateTrack(brightnessSlider);
 updateTrack(speedSlider);
 setMode('breathing');
+// Reflect the default ON state in the Power toggle + ambient glow so the UI
+// matches the lamp (and the mode command syncAll will send) before connecting.
+document.getElementById('powerToggle').classList.toggle('on', state.on);
+updateBodyClass();
+setConnState('idle');
 </script>
 </body>
 </html>
