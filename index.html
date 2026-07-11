@@ -24,7 +24,7 @@
       --glass:     rgba(255,255,255,0.06);
       --green:     #4caf82;
       --red:       #e04545;
-      --breath-s:  5s;
+      --breath-s:  20s;
     }
 
     html, body {
@@ -444,6 +444,18 @@
         </div>
       </div>
 
+      <!-- Sleep — arms a 1-hour auto-off. The lamp keeps running now and turns
+           itself off after an hour; BLE stays alive so Power wakes it again. -->
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="row-label">Sleep</div>
+            <div class="row-sublabel">Turn lamp off after 1 hour — Power wakes it</div>
+          </div>
+          <button class="toggle" id="sleepToggle" aria-label="Sleep"></button>
+        </div>
+      </div>
+
       <!-- Mode -->
       <div class="card">
         <div class="card-label">Mode</div>
@@ -472,21 +484,10 @@
         <div class="slider-row">
           <div class="slider-header">
             <span class="slider-name">Cycle</span>
-            <span class="slider-value" id="speedVal">5.0 s</span>
+            <span class="slider-value" id="speedVal">20.0 s</span>
           </div>
           <input type="range" id="speedSlider" min="0" max="100" value="0"
                  aria-label="Breathing speed">
-        </div>
-      </div>
-
-      <!-- Sleep timer -->
-      <div class="card">
-        <div class="row">
-          <div>
-            <div class="row-label">Sleep timer</div>
-            <div class="row-sublabel">Auto-off after 30 min (safety)</div>
-          </div>
-          <button class="toggle" id="sleepToggle" aria-label="Sleep timer"></button>
         </div>
       </div>
 
@@ -498,7 +499,7 @@
 <script>
 // ── App version ────────────────────────────────────────────────
 // Bump this on every change you want to be able to identify at runtime.
-var APP_VERSION = 'v0.11.1';
+var APP_VERSION = 'v0.11.2';
 
 // ── BLE UUIDs ──────────────────────────────────────────────────
 // Custom command service + characteristic (must match the firmware).
@@ -850,7 +851,9 @@ brightnessSlider.addEventListener('input', function() {
 var speedSlider = document.getElementById('speedSlider');
 speedSlider.addEventListener('input', function() {
   state.breathNorm = parseInt(this.value) / 100;
-  var hz = 0.2 + state.breathNorm * 0.4;
+  // Must match the firmware: hz = minHz + norm * (maxHz - minHz),
+  // minHz 0.05 (20.0s/cycle, slowest) to maxHz 0.6 (1.67s/cycle, fastest).
+  var hz = 0.05 + state.breathNorm * 0.55;
   var cycle = (1 / hz).toFixed(1);
   document.getElementById('speedVal').textContent = cycle + ' s';
   document.documentElement.style.setProperty('--breath-s', cycle + 's');
