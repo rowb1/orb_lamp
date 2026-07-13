@@ -1,10 +1,10 @@
-# Orb Lamp — Specification (v0.9 DRAFT)
+# Orb Lamp — Specification (v1.0 FINAL)
 
 A Puck.js-controlled mains-powered LED lamp with phone control, offering **solid** and **breathing** modes. Inspired by [Frankie's Magic Lamp](https://github.com/rowb1/frankie), simplified (no flash mode) and re-architected for a larger, USB-powered LED.
 
 **Repository:** https://github.com/rowb1/orb_lamp
 
-> **Status:** Draft. **LED current draw now confirmed: 0.35 A @ 5.00 V** (measured, UT658Dual USB tester + benchtop PSU; see §2.1). **MOSFET driver module selected: LR7843 opto-isolated module** (see §4.1) — changes grounding topology vs earlier drafts. **Puck supply resolved: 5V → 3.3V buck converter** (see §3.1, output 3.34V confirmed, dropout at 4.0V/recovery at 4.1V measured) — no coin cell in final build. **Breathing rate defined: 5 s/cycle default, slider triples to 1.67 s/cycle** (see §5). **Firmware (§5.1) adapted from Frankie's `jar7A.js`** with brightness control (default 0.4, persisted via `E.setStorage()`). **Drive circuit RESOLVED and bench-confirmed (2026-07-11):** the LR7843 *opto* module was rejected (can't switch a 5V load — see §4.1), and the adopted circuit is **direct gate drive** on the bare LR7843 with the opto removed (see §4.0). Real 5V LED array now runs at full brightness with smooth breathing; firmware unchanged at v0.10.2.
+> **Status: FINAL — built, flashed, and in daily use (2026-07-12).** Firmware `kates_lamp.js` **v0.10.5**, app `index.html` **v0.11.4** (both display their version at runtime). The full path — phone app → Web Bluetooth → custom BLE characteristic → firmware → LR7843 → LED — is confirmed end-to-end on the real hardware. **Drive circuit:** direct gate drive on the bare LR7843 with the PC817 opto removed (§4.0); the opto module was bench-rejected at 5V (§4.1). **Puck supply:** 5V → 3.3V buck converter (§3.1), no CR2032. **LED:** 0.35 A @ 5.00 V measured (§2.1), integrated current-limiting resistors. **Breathing:** 1.67 s → 60 s per cycle (~20 s default), with an adjustable minimum-brightness floor so it need not dip fully off. **Persistence:** peak brightness and breath floor saved to flash via the `Storage` module. See `ble_debug.md` for the full debugging history and firmware/app changelogs.
 
 ---
 
@@ -17,8 +17,8 @@ A Puck.js-controlled mains-powered LED lamp with phone control, offering **solid
 | Puck supply | 5V → 3.3V buck converter (no CR2032 in final build) |
 | Control | Phone web app over BLE (Web Bluetooth, Android) |
 | Modes | Solid (steady on) and Breathing (sinusoidal PWM pulse) |
-| Removed vs Frankie | Flash mode |
-| Retained from Frankie | Breathing via hardware PWM, button master toggle, deep-sleep power management, safety auto-off |
+| Removed vs Frankie | Flash mode; Frankie's deep-sleep power management (mains-powered — BLE stays alive so the app can always reach the lamp) |
+| Retained from Frankie | Breathing via hardware PWM, button master toggle. Frankie's forced safety auto-off becomes an opt-in **1-hour sleep timer** (off by default) |
 
 ---
 
@@ -211,210 +211,89 @@ The Puck PWM pin → 1 kΩ series resistor (on module) → PC817 LED. When the P
 
 | Mode | Behaviour |
 |---|---|
-| **Solid** | `analogWrite(PWM_PIN, brightness)` — LED steady at current brightness level. |
-| **Breathing** | Sinusoidal PWM ramp scaled by `brightness` — peak brightness is the current brightness setting, not always 1.0. **Default: 5 s per full cycle.** |
-| **Off / standby** | GPIO low; pulldown ensures LED off. `NRF.sleep()` after standby period. |
+| **Solid** | `analogWrite(PWM_PIN, brightness)` — LED steady at the current (peak) brightness level. |
+| **Breathing** | Sinusoidal PWM between the **minimum-brightness floor** and the **peak** brightness: `val = floor + ((sin+1)/2)*(peak - floor)`. Default ~20 s per cycle; range 1.67–60 s. |
+| **Off / standby** | GPIO low; pulldown ensures LED off. Mains-powered, so **no `NRF.sleep()`** — BLE stays alive so the app or button can turn the lamp back on. |
 
-**Brightness control:** a 0–1 scalar applied to all LED output. Default 0.4 (noticeably on but not room-filling). Persisted to Puck flash via `E.setStorage()` — survives power-off and reboot. In breathing mode, sets the sine wave's *peak*; in solid mode, sets the steady output level. Minimum clamped to 0.05 to prevent fully-off via slider.
+**Brightness control:** a 0–1 scalar setting the *peak* LED output. Default 0.4 (noticeably on but not room-filling). Persisted to flash via the `Storage` module (`require("Storage").writeJSON("orb.bright", …)`) — survives power-off and reboot. In breathing mode it sets the sine peak; in solid mode the steady level. Minimum clamped to 0.05.
 
-**Button (physical master toggle):** single press wakes the lamp (green flash) / enters standby (red flash), mirroring Frankie.
+**Minimum brightness (breath floor):** a 0–1 scalar setting the dimmest point of the breath, so breathing need not dip fully off. Absolute, clamped at use-time to ≤ peak; default 0 (breathe fully off, the original behaviour). Persisted to flash (`orb.floor`).
+
+**Button (physical master toggle):** single press wakes the lamp (green flash) / enters standby (red flash), restoring the last mode.
 
 **Breathing rate — default and range:**
 
-Resting/relaxed human breathing is typically 12–20 breaths/minute (one breath every 3–5 s). The lamp defaults to the slow end of that range for a calm ambient feel, with the UI slider able to speed it up to roughly **triple the rate** (shorter cycle) for a livelier effect.
+The lamp breathes from a lively ~1.67 s cycle up to a very slow 60 s cycle, defaulting to a calm, clearly-visible **~20 s** cycle. The app slider maps **linearly in cycle length** (not frequency) so it feels even across that wide range; firmware and app share the identical formula so the displayed cycle matches the lamp.
 
-| Parameter | Value | Cycle time | Notes |
+| Parameter | Cycle time | Frequency | Notes |
 |---|---|---|---|
-| **Default breathing frequency** | 0.2 Hz | 5.0 s/cycle | One full on→off→on cycle every 5 seconds — matches a relaxed resting breath |
-| **Slider minimum** | 0.2 Hz | 5.0 s/cycle | Slowest = default |
-| **Slider maximum** | 0.6 Hz | 1.67 s/cycle | 3× the default frequency (1/3 the cycle time) |
-| Hardware safety floor/ceiling (carried from Frankie, unchanged) | 0.02 – 20.0 Hz | — | Wider than UI range — UI range is a deliberate comfort subset |
+| **Slider minimum (slowest)** | 60 s/cycle | ~0.017 Hz | Barely-perceptible slow drift |
+| **Boot / default** | ~20 s/cycle | 0.05 Hz | Decoupled from the slider minimum; calm but clearly moving |
+| **Slider maximum (fastest)** | 1.67 s/cycle | 0.6 Hz | Livelier pulse |
 
-**Distinct from PWM carrier frequency:** the breathing rate (0.2–0.6 Hz) is the slow sinusoidal *envelope*. The PWM *carrier* (the fast switching that creates each brightness level) is separate — §4.1 notes the LR7843 module's opto caps this at ~1–5 kHz.
+**Distinct from PWM carrier frequency:** the breathing rate is the slow sinusoidal *envelope*. The PWM *carrier* (the fast switching that creates each brightness level) is Espruino's default `analogWrite` frequency — with the opto removed (§4.0) it drives the LED flicker-free with no explicit `freq` needed.
 
-**Safety auto-off:** 30 min hardcoded timer — consistent with the LED module's thermal note (§2.1).
+**Sleep timer:** an opt-in **1-hour** auto-off, **off by default** (mains-powered — no forced auto-off). Armed/cancelled from the app Sleep toggle or persisted in flash (`orb.sleep`); BLE stays alive after it fires so the lamp can be woken again.
 
-### 5.1 Firmware code (Espruino / Puck.js)
+### 5.1 Firmware implementation
 
-Adapted from Frankie's actual source (`jar7A.js`, supplied by the user) — same tick-based phase-accumulator pattern, button/standby/safety-timer structure, and `digitalPulse` LED feedback. Three changes from Frankie's original:
+The authoritative firmware is **`kates_lamp.js` (v0.10.5)** in the repo — flash it via the Espruino Web IDE (see the flashing-workflow notes in `ble_debug.md`). It is adapted from Frankie's `jar7A.js` (same tick-based phase-accumulator breathing, button handling, and `digitalPulse` LED feedback), with these changes:
 
-1. **`FET.write()` / `FET.set()` / `FET.reset()` → `PWM_PIN` GPIO calls.** Frankie drove the Puck's *onboard* low-side FET directly. Kate's lamp uses the external LR7843 module via GPIO `D1`, active-HIGH.
-2. **Flash mode removed, frequency range retargeted.** Frankie's 0.1–10 Hz range supported flashing. Orb lamp drops flash mode and narrows to 0.2–0.6 Hz.
-3. **Brightness control added with flash persistence.** `brightness` (0–1, default 0.4) scales all LED output. Loaded from flash on boot via `E.getStorage("brightness")`; saved on change via `E.setStorage("brightness", ...)`. Survives power-off.
+- **External MOSFET on `D1`** (active-HIGH) instead of the Puck's onboard FET.
+- **Flash mode removed;** breathing retargeted to a 1.67–60 s cycle, mapped linearly in cycle length.
+- **Peak brightness + minimum-brightness floor,** both persisted to flash via the `Storage` module. (Espruino has no `E.getStorage`/`E.setStorage`; persistence uses `require("Storage").readJSON/writeJSON` with keys `orb.bright`, `orb.floor`, `orb.sleep`.)
+- **Custom BLE command characteristic** (not the Nordic UART) so the JS console can stay on BLE permanently and the Web IDE can always reconnect to reflash. `NRF.setServices` runs inside `onInit()`. See `ble_debug.md` for the transport rationale and the `maxLen` fix (commands longer than one 20-byte BLE packet were being rejected/truncated).
+- **Mains-powered:** no `NRF.sleep()`; an optional 1-hour sleep timer can be armed from the app or button.
+- **ASCII-only source** — non-ASCII characters break the Web IDE upload.
 
-```javascript
-// =============================================================
-// Orb Lamp — Puck.js v2.1 firmware (Espruino)
-// Adapted from Frankie's jar7A.js. Drives an LR7843 opto-isolated
-// MOSFET module (active-HIGH PWM on D1) instead of the Puck's
-// onboard FET. Flash mode removed; breathing range narrowed to
-// match a relaxed human breathing rate. Brightness control added
-// with persistence via E.setStorage(). See spec §4.1 and §5.
-// =============================================================
+**Command protocol** — newline-terminated JSON written to the command characteristic (service `6e40aa01-b5a3-f393-e0a9-e50e24dcca9e`, characteristic `6e40aa02-b5a3-f393-e0a9-e50e24dcca9e`):
 
-var PWM_PIN = D1; // → LR7843 module PWM input (active-HIGH)
+| Command | Payload |
+|---|---|
+| mode | `{"cmd":"mode","value":"solid"\|"breathing"\|"off"}` |
+| breathSpeed | `{"cmd":"breathSpeed","value":0.0-1.0}` — 0 = 60 s/cycle, 1 = 1.67 s/cycle (linear in cycle length) |
+| brightness | `{"cmd":"brightness","value":0.0-1.0}` — peak level, persisted |
+| minBright | `{"cmd":"minBright","value":0.0-1.0}` — breath floor, persisted |
+| sleep | `{"cmd":"sleep","value":true\|false}` — arm/cancel the 1-hour timer |
+| test | `{"cmd":"test"}` — flash red LED 0.5 s (comms self-test) |
 
-var i, t, t_s, step = 0, active = true;
-
-// Configurable Parameters
-var cfg = {
-  minHz: 0.2,    // 5.0s/cycle — default, matches relaxed resting breath
-  maxHz: 0.6,    // 1.67s/cycle — 3x default, slider maximum
-  standby: 300,  // seconds before deep sleep after powerOff
-  sleep: 30 * 60 // seconds — safety auto-off (thermal note §2.1)
-};
-
-// Brightness: 0..1, persisted to flash.
-// Default 0.4 — noticeably on but not room-filling; user can raise via app.
-var brightness = 0.4;
-
-function loadBrightness() {
-  var stored = E.getStorage("brightness");
-  if (stored !== undefined) {
-    var val = parseFloat(stored);
-    if (!isNaN(val)) brightness = Math.max(0.05, Math.min(1.0, val));
-  }
-}
-
-function saveBrightness() {
-  E.setStorage("brightness", brightness.toString());
-}
-
-function stopLights(silent) {
-  if (i) i = clearInterval(i);
-  if (t_s) t_s = clearTimeout(t_s);
-  digitalWrite(PWM_PIN, 0);
-  digitalWrite(LED1,0); digitalWrite(LED2,0); digitalWrite(LED3,0);
-  step = 0;
-  if (!silent) active = false;
-}
-
-function startBreathing(hz) {
-  if (t) t = clearTimeout(t);
-  NRF.wake();
-  stopLights(true);
-  active = true;
-  digitalPulse(LED2, 1, 500); // green flash = waking
-  i = setInterval(() => {
-    step += (hz * Math.PI * 2) / 50; // 50 ticks/sec at 20ms interval
-    var val = ((Math.sin(step) + 1) / 2) * brightness; // scale by brightness
-    analogWrite(PWM_PIN, val);
-    digitalWrite(LED3, val > (0.5 * brightness) ? 1 : 0);
-  }, 20);
-  t_s = setTimeout(powerOff, cfg.sleep * 1000);
-}
-
-function allOn() {
-  if (t) t = clearTimeout(t);
-  NRF.wake();
-  stopLights(true);
-  active = true;
-  digitalPulse(LED2, 1, 500);
-  analogWrite(PWM_PIN, brightness); // solid at current brightness level
-  digitalWrite(LED3, 1);
-  t_s = setTimeout(powerOff, cfg.sleep * 1000);
-}
-
-function powerOff() {
-  stopLights();
-  active = false;
-  digitalPulse(LED1, 1, 500); // red flash = standby
-  t = setTimeout(() => { NRF.sleep(); }, cfg.standby * 1000);
-}
-
-// Button: toggle between standby and default breathing (5s/cycle)
-setWatch(() => active ? powerOff() : startBreathing(cfg.minHz), BTN, {edge:"rising", repeat:true, debounce:50});
-
-// ---- App-facing setters (called from BLE command handlers) ----
-function setMode(mode) {
-  if (mode === "off") powerOff();
-  else if (mode === "solid") allOn();
-  else if (mode === "breathing") startBreathing(cfg.minHz);
-}
-
-function setBreathSpeed(normalized) {
-  // normalized: 0..1 from UI slider. 0 = 5.0s/cycle, 1 = 1.67s/cycle (3x).
-  var n = Math.max(0, Math.min(1, normalized));
-  var hz = cfg.minHz + n * (cfg.maxHz - cfg.minHz);
-  if (active) startBreathing(hz);
-}
-
-function setBrightness(val) {
-  // val: 0..1 from UI slider. Clamped to 0.05 minimum (avoid fully off).
-  brightness = Math.max(0.05, Math.min(1.0, val));
-  saveBrightness(); // persist to flash immediately
-  // Live-update: breathing picks up new brightness on next tick automatically;
-  // solid mode needs an explicit analogWrite to update immediately.
-  if (active) {
-    var currentMode = (i !== undefined && i !== null) ? "breathing" : "solid";
-    if (currentMode === "solid") analogWrite(PWM_PIN, brightness);
-  }
-}
-
-// ---- BLE command interface (sketch — wire up to actual GATT/UART RX) ----
-// Expected commands from phone app, e.g. via NRF UART service:
-//   {"cmd":"mode","value":"solid"|"breathing"|"off"}
-//   {"cmd":"breathSpeed","value":0.0-1.0}   // 0 = 5s cycle, 1 = 1.67s cycle
-//   {"cmd":"brightness","value":0.0-1.0}    // persisted to flash
-function onBleCommand(msg) {
-  try {
-    var cmd = JSON.parse(msg);
-    if (cmd.cmd === "mode") setMode(cmd.value);
-    else if (cmd.cmd === "breathSpeed") setBreathSpeed(cmd.value);
-    else if (cmd.cmd === "brightness") setBrightness(cmd.value);
-  } catch (e) {
-    // ignore malformed commands
-  }
-}
-// NRF.on('data', onBleCommand); // wire up once UART/GATT service is finalised
-
-// ---- Boot ----
-loadBrightness();          // restore saved brightness from flash
-startBreathing(cfg.minHz); // default: 5s breathing cycle
-```
-
-**Notes on the adaptation:**
-- **Phase-accumulator math unchanged from Frankie:** `step += (hz * Math.PI * 2) / 50` at 20ms tick is Frankie's exact pattern. At 0.2 Hz → 5.0s period; at 0.6 Hz → 1.67s period.
-- **Brightness scales the sine peak:** `val = ((Math.sin(step) + 1) / 2) * brightness` — at brightness 0.4 the LED peaks at 40% duty cycle, not 100%. This is the natural way to implement "max brightness for breathing."
-- **Persistence via `E.setStorage()`:** Espruino writes to a small reserved flash area that survives power-off and reboot. `loadBrightness()` runs at boot before `startBreathing()` so the first breath already uses the saved level. Saves on every change from the app — no explicit "save" button needed.
-- **Default brightness 0.4** rather than 1.0 — addresses the "a little too bright for the room" feedback. Can be raised to taste via the app slider and will be remembered.
-- **`setBreathSpeed` restarts the interval on change** to keep the phase accumulator consistent — matches Frankie's pattern.
-- **BLE wiring is a stub** — `onBleCommand` is defined but `NRF.on('data', ...)` is commented out pending the phone app.
+Each breathing tick computes `val = lo + ((sin+1)/2)*(peak - lo)` where `lo = min(breathFloor, brightness)`, then `analogWrite(D1, val)`.
 
 ---
 
 ## 6. Phone app
 
-- Web Bluetooth control page (Android), served from GitHub Pages as an installable PWA — same delivery model as Frankie (`index.html` + `manifest.json` + `icon.png`).
+Built and in daily use — a Web Bluetooth control page (`index.html`, v0.11.4) served from GitHub Pages as an installable PWA (`index.html` + `manifest.json` + icons).
+
 - **Repo:** https://github.com/rowb1/orb_lamp
-- **GitHub Pages URL (once enabled):** https://rowb1.github.io/orb_lamp
-- UI controls:
-  - **On/Off toggle**
-  - **Solid vs Breathing toggle**
-  - **Breathing speed slider** — 0 = 5s/cycle (default), max = 1.67s/cycle (3×)
-  - **Brightness slider** — 0.05–1.0; sets peak brightness for both solid and breathing modes; persisted to Puck flash, survives power-off
-- Visual theme TBC (Frankie used amber/cork glassmorphism — orb lamp theme TBC with Kate).
+- **GitHub Pages URL:** https://rowb1.github.io/orb_lamp
+- **Transport:** writes newline-terminated JSON to the custom command characteristic (§5.1). Writes are **serialised** — Android allows only one outstanding GATT write at a time — via a small send queue.
+- **Controls:**
+  - **Connect / Disconnect** with a live connection-status dot (idle / busy / connected / error).
+  - **Power** — on/off (defaults ON, matching the firmware's boot state so connecting doesn't switch the lamp off).
+  - **Sleep** — arm/cancel the 1-hour auto-off; the lamp stays reachable and Power wakes it.
+  - **Mode** — Breathing / Solid.
+  - **Brightness** — peak level (5–100%).
+  - **Minimum brightness** — the breath floor (breathing only; dims out in Solid mode).
+  - **Breath speed** — cycle length, 1.67–60 s (linear-in-cycle slider, ~20 s default).
+- **Robustness:** connection state machine, auto-reconnect on unexpected drops (reuses the picked device, capped backoff), graceful cancel/error handling, and a scrollable layout so no control is trapped off-screen on small phones.
+- **Theme:** dark navy background with an amber "orb" glow that breathes in sync with the lamp, and Cinzel display type — the orb lamp's own dark/amber take (Frankie used amber/cork glassmorphism).
 
 ---
 
-## 7. Open questions / TBC
+## 7. Status of open questions
 
-**Resolved by bench measurement, LED datasheet, MOSFET module selection, Puck supply decision, breathing-rate research, Frankie source adaptation, and brightness design decision:** current draw (0.35 A @ 5.00 V, measured), built-in current limiting (yes, no R_L), drive method (**LR7843 direct gate drive, opto removed — §4.0; opto-module approach rejected at 5V — §4.1**), supply sizing (≥1 A USB adaptor), PWM dimmability (yes — bench-confirmed smooth breathing on the real LED), thermal limit (airflow needed >30 min), grounding (single common ground — non-isolated buck + opto removed, §3.2), Puck supply method (5V→3.3V buck converter — no CR2032 in final build), default breathing rate (5 s/cycle, 0.2 Hz, tripled to 1.67 s/cycle at slider max), firmware base (adapted from Frankie's `jar7A.js`), brightness control (0–1 scalar, default 0.4, persisted via `E.setStorage()`, sets sine peak and solid level).
+**Resolved (design complete, bench-confirmed, in daily use):** current draw (0.35 A @ 5.00 V, measured); built-in current limiting (yes, no R_L); drive method (LR7843 direct gate drive, opto removed — §4.0; opto-module approach rejected at 5V — §4.1); supply sizing (≥1 A USB adaptor); PWM dimmability (bench-confirmed smooth breathing on the real LED — Espruino's default `analogWrite` carrier is flicker-free with the opto gone, no explicit `freq` needed); gate drive (D1 puts ~3.2V on the LR7843 gate, fully switching the 0.35 A load); thermal limit (airflow needed >30 min); grounding (single common ground — non-isolated buck + opto removed, §3.2); Puck supply (5V→3.3V buck, no CR2032; output 3.34V no-load, ~4.1V minimum input); breathing rate (1.67–60 s cycle, ~20 s default); brightness + minimum-brightness floor (0–1, persisted via the `Storage` module); firmware base (adapted from `jar7A.js`); BLE transport (custom command characteristic — §5.1, built and confirmed); phone app (built, v0.11.4 — §6); firmware bench validation (verified end-to-end on real hardware; brightness/floor persistence across power cycles confirmed).
 
-Still open:
+**Remaining (physical build / to-taste, non-blocking):**
 
-1. **Buck converter output — PARTIALLY VALIDATED.** Output measured 3.34V (no load) ✅. Dropout confirmed at 4.0V input; recovery at 4.1V — minimum safe USB supply input is **4.1V**. Remaining: measure adaptor output with LED running, confirm stays ≥4.1V.
-2. **USB adaptor voltage under load** — confirm stays ≥4.1V with LED running (0.35 A).
-3. **PWM carrier frequency — RESOLVED.** With direct gate drive (opto removed), Espruino's default `analogWrite(PWM_PIN, val)` carrier gives smooth, flicker-free breathing on the real LED. No explicit `freq` needed. (The old ~1–5 kHz opto-bandwidth constraint no longer applies — there is no opto.)
-4. **Gate drive — RESOLVED (approach changed).** The opto module's 5V gate bias was inadequate (§4.1). Adopted direct gate drive (§4.0): D1 puts a clean ~3.2V on the LR7843 gate, fully switching the 0.35 A load. Bench-confirmed full brightness.
-5. **Enclosure / form factor** — must allow airflow around LED housing per thermal note.
-6. **Safety auto-off duration** — 30 min proposed; confirm against intended use and ventilation.
-7. **Firmware bench validation — MOSTLY DONE.** Verified end-to-end on the real hardware (direct-drive LR7843 + buck-powered Puck): full-brightness solid, smooth breathing. Still worth a deliberate pass on `E.setStorage()` brightness persistence across power cycles and the safety/standby timers.
-8. **BLE command interface** — `onBleCommand` stub needs wiring to GATT/Nordic UART service once phone app (§6) is built.
+1. **USB adaptor voltage under load** — one-time check that the chosen mains adaptor holds ≥4.1V at the buck input with the LED running (0.35 A). The buck itself is already validated (3.34V no-load; dropout 4.0V, recovery 4.1V).
+2. **Enclosure / form factor** — must allow airflow around the LED housing per the thermal note (§2.1).
+3. **Sleep-timer duration** — currently an opt-in 1-hour auto-off (off by default); revisit only if intended use suggests otherwise.
 
 ---
 
-## 8. Bill of materials (preliminary)
+## 8. Bill of materials (as built)
 
 | Qty | Part | Notes |
 |---|---|---|

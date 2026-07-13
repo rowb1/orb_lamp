@@ -26,9 +26,19 @@
 // (minHz 0.2 -> 0.05). Fastest unchanged at ~1.67s (maxHz 0.6).
 // The boot/default rate is the slow end, so the lamp now boots at
 // the 20s cycle.
+//
+// v0.10.5: (1) breath range extended - slowest cycle now 60s (was
+// 20s). The normalized speed maps linearly in CYCLE LENGTH so the
+// slider feels even across the wide 1.67-60s range, and the boot/
+// default rate is decoupled from the slider minimum (now ~20s).
+// (2) Breathing no longer dips fully off: a persisted "breath floor"
+// (breathFloor, 0..1 absolute, clamped to <= peak brightness) sets
+// the minimum brightness reached during breathing. New command
+// {"cmd":"minBright","value":0..1}; 0 = breathe fully off (old
+// behaviour). Persisted to flash as orb.floor.
 // =============================================================
 
-var FW_VERSION = "v0.10.4"; // bump on every firmware change
+var FW_VERSION = "v0.10.5"; // bump on every firmware change
 
 var PWM_PIN = D1; // -> LR7843 module PWM input (active-HIGH)
 
@@ -36,19 +46,35 @@ var i, t, t_s, t_sleep, step = 0, active = true;
 
 // Configurable Parameters
 var cfg = {
-  minHz:   0.05,     // 20.0s/cycle - slowest, and the boot/default breathing rate
-  maxHz:   0.6,      // 1.67s/cycle - slider maximum (fastest)
-  sleepDelay: 60 * 60 // 1 hour in seconds - sleep timer if enabled
+  minCycleS:     1.67,  // fastest breath cycle in seconds (slider maximum)
+  maxCycleS:     60,    // slowest breath cycle in seconds (slider minimum)
+  defaultCycleS: 20,    // boot/default breath cycle (decoupled from the min)
+  sleepDelay:    60 * 60 // 1 hour in seconds - sleep timer if enabled
 };
+
+// Map the app's normalized breath-speed (0..1) to Hz. Linear in CYCLE LENGTH
+// (period) so the slider feels even across the wide 1.67-60s range:
+//   n = 0 -> slowest (maxCycleS),  n = 1 -> fastest (minCycleS).
+// The app uses the identical formula so its displayed cycle matches the lamp.
+function normToHz(n) {
+  n = Math.max(0, Math.min(1, n));
+  var period = cfg.maxCycleS - n * (cfg.maxCycleS - cfg.minCycleS);
+  return 1 / period;
+}
 
 // Brightness: 0..1, persisted to flash. Default 0.4.
 var brightness = 0.4;
+
+// Breath floor: minimum brightness reached during breathing, 0..1 absolute,
+// clamped at use-time to <= peak brightness. 0 = breathe fully off (original
+// behaviour). Persisted to flash.
+var breathFloor = 0;
 
 // Sleep timer: off by default (mains-powered - no need to save battery)
 var sleepEnabled = false;
 
 // Track current breathing hz so sleep-timer restart can resume correctly
-var currentHz = 0.05; // matches cfg.minHz (20s/cycle) until the app changes it
+var currentHz = 1 / cfg.defaultCycleS; // 20s cycle until the app changes it
 
 // Track the current lamp mode explicitly ("breathing" | "solid") so that a
 // breath-speed change doesn't force breathing while the lamp is in solid
@@ -67,12 +93,20 @@ function loadSettings() {
   if (typeof b === "number" && !isNaN(b)) {
     brightness = Math.max(0.05, Math.min(1.0, b));
   }
+  var f = store.readJSON("orb.floor", true);
+  if (typeof f === "number" && !isNaN(f)) {
+    breathFloor = Math.max(0, Math.min(1.0, f));
+  }
   var s = store.readJSON("orb.sleep", true);
   if (typeof s === "boolean") sleepEnabled = s;
 }
 
 function saveBrightness() {
   store.writeJSON("orb.bright", brightness);
+}
+
+function saveBreathFloor() {
+  store.writeJSON("orb.floor", breathFloor);
 }
 
 function saveSleepEnabled() {
@@ -110,8 +144,10 @@ function startBreathing(hz) {
   currentHz = hz;
   digitalPulse(LED2, 1, 500); // green flash = waking
   i = setInterval(function() {
-    step += (hz * Math.PI * 2) / 50; // 50 ticks/sec at 20ms interval
-    var val = ((Math.sin(step) + 1) / 2) * brightness;
+    step += (hz * Math.PI * 2) / 50;      // 50 ticks/sec at 20ms interval
+    var s = (Math.sin(step) + 1) / 2;     // 0..1
+    var lo = Math.min(breathFloor, brightness); // floor never exceeds the peak
+    var val = lo + s * (brightness - lo); // breathe between floor and peak
     analogWrite(PWM_PIN, val);
     digitalWrite(LED3, val > (0.5 * brightness) ? 1 : 0);
   }, 20);
@@ -167,14 +203,21 @@ function setMode(mode) {
 }
 
 function setBreathSpeed(normalized) {
-  var n = Math.max(0, Math.min(1, normalized));
-  var hz = cfg.minHz + n * (cfg.maxHz - cfg.minHz);
-  currentHz = hz;
+  currentHz = normToHz(normalized); // linear-in-cycle-length, 60s .. 1.67s
   resetSleepTimer();
   // Only apply immediately if we're actually breathing. In solid mode we
   // store the new speed for later but must NOT start breathing (that was
   // the cause of the lamp flashing when solid was selected).
-  if (active && currentMode === "breathing") startBreathing(hz);
+  if (active && currentMode === "breathing") startBreathing(currentHz);
+}
+
+function setMinBright(val) {
+  // Absolute breath floor 0..1. Clamped at use-time to <= peak brightness.
+  breathFloor = Math.max(0, Math.min(1.0, val));
+  saveBreathFloor(); // persist immediately
+  resetSleepTimer();
+  // Breathing reads breathFloor live on the next interval tick, so no
+  // immediate write is needed here. Solid mode ignores the floor.
 }
 
 function setBrightness(val) {
@@ -218,6 +261,7 @@ function setSleep(enabled) {
 //   {"cmd":"mode",       "value":"solid"|"breathing"|"off"}
 //   {"cmd":"breathSpeed","value":0.0-1.0}
 //   {"cmd":"brightness", "value":0.0-1.0}
+//   {"cmd":"minBright",  "value":0.0-1.0}   // breath floor (min brightness)
 //   {"cmd":"sleep",      "value":true|false}
 //   {"cmd":"test"}   // flash red LED 0.5s (comms self-test)
 var CMD_SERVICE = "6e40aa01-b5a3-f393-e0a9-e50e24dcca9e";
@@ -237,6 +281,7 @@ function handleCommandData(data) {
       if      (cmd.cmd === "mode")        setMode(cmd.value);
       else if (cmd.cmd === "breathSpeed") setBreathSpeed(cmd.value);
       else if (cmd.cmd === "brightness")  setBrightness(cmd.value);
+      else if (cmd.cmd === "minBright")   setMinBright(cmd.value);
       else if (cmd.cmd === "sleep")       setSleep(cmd.value);
       else if (cmd.cmd === "test")        digitalPulse(LED1, 1, 500); // comms self-test
     } catch (e) {
@@ -273,8 +318,8 @@ function setupServices() {
 function onInit() {
   print("Orb Lamp firmware " + FW_VERSION);
   loadSettings();            // restore brightness + sleep preference from flash
-  setupServices();           // register the custom command characteristic
-  startBreathing(cfg.minHz); // default: on, 20s breathing cycle (slowest)
+  setupServices();                     // register the custom command characteristic
+  startBreathing(1 / cfg.defaultCycleS); // default: on, ~20s breathing cycle
 }
 
 // onInit() runs automatically at power-on when the code is saved to flash.

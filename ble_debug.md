@@ -1,19 +1,31 @@
 # Orb Lamp — BLE Debugging Summary & Resolution
 
-**Status as of v0.10.2:** Comms fully working AND real LED hardware confirmed.
-App → BLE → firmware → hardware path confirmed end-to-end (red-LED comms test
-flashes on demand). Lamp logic verified on the onboard blue LED **and now on the
-real 5V LED array** — full brightness, smooth breathing. The MOSFET drive circuit
-is resolved (see "MOSFET hardware bring-up" below); firmware unchanged at v0.10.2.
-Remaining work is on the **app** (`index.html`) — UI/UX and theming.
+**Status: FINAL — built and in daily use.** Comms, hardware, firmware and app
+are all complete. App → BLE → firmware → hardware path confirmed end-to-end.
+Lamp logic verified on the real 5V LED array — full brightness, smooth breathing
+between an adjustable floor and peak, cycle 1.67–60 s. The MOSFET drive circuit
+is resolved (see "MOSFET hardware bring-up" below). This document is retained as
+the debugging history and the firmware/app changelog; the design spec is
+`kates_lamp_spec.md`.
 
-Current versions: firmware `kates_lamp.js` **v0.10.4**, app `index.html`
-**v0.11.3**. Both print/display their version so the running build can always
+Current versions: firmware `kates_lamp.js` **v0.10.5**, app `index.html`
+**v0.11.4**. Both print/display their version so the running build can always
 be confirmed (firmware prints `Orb Lamp firmware vX.Y.Z` on boot; app shows
 `App vX.Y.Z` under the status line).
 
 ### Firmware changelog
 
+- **v0.10.5 (60s range + breath floor).** (1) Slowest breath cycle extended to
+  60s (from 20s). The normalized breath-speed now maps linearly in *cycle
+  length* (`normToHz`), so the slider feels even across the wide 1.67-60s span
+  instead of bunching near the slow end; and the boot/default rate is decoupled
+  from the slider minimum (`cfg.defaultCycleS = 20`). (2) New persisted
+  `breathFloor` (0..1 absolute, clamped at use to <= peak) so breathing dips to
+  a minimum brightness instead of fully off: `val = lo + s*(peak - lo)` where
+  `lo = min(breathFloor, brightness)`. New command
+  `{"cmd":"minBright","value":0..1}`, saved to flash as `orb.floor`; default 0 =
+  breathe fully off (unchanged behaviour until raised). App and firmware share
+  the identical cycle-mapping formula so the displayed cycle matches the lamp.
 - **v0.10.4 (slower breathing).** Slowest breath cycle widened from 5s to 20s
   (`minHz` 0.2 -> 0.05); fastest unchanged at ~1.67s (`maxHz` 0.6). The boot/
   default rate is the slow end, so the lamp now boots at the 20s cycle. App
@@ -33,6 +45,15 @@ be confirmed (firmware prints `Orb Lamp firmware vX.Y.Z` on boot; app shows
 
 ### App changelog
 
+- **v0.11.4 (Minimum slider + 60s breath range).** New **Minimum brightness**
+  slider card (breath floor) below Brightness: absolute 0-100%, kept at or below
+  the peak Brightness (raising it past the peak clamps; lowering Brightness below
+  it pulls it down), sends `{"cmd":"minBright"}`, added to `syncAll`. Dims out in
+  Solid mode (renamed the shared dim class `.speed-card` -> `.breath-card`, now
+  covering both the Minimum and Breath speed cards). Breath-speed slider
+  retargeted to the 1.67-60s range with cycle-linear mapping (`normToCycle`,
+  matching firmware `normToHz`); the slider now starts at the ~20s default
+  position (value 69) rather than the slow extreme.
 - **v0.11.3 (scrollable layout, test button removed).** Removed the "Flash red
   LED (comms test)" button and all its handlers/CSS (the maxLen bug it helped
   diagnose is fixed). Layout is now scrollable so no control can be trapped off
