@@ -346,9 +346,9 @@
       cursor: pointer;
     }
 
-    /* Speed slider dims when in solid mode */
-    .speed-card { transition: opacity 0.3s; }
-    .speed-card.dimmed { opacity: 0.35; pointer-events: none; }
+    /* Breathing-only cards (Minimum + Breath speed) dim out in Solid mode */
+    .breath-card { transition: opacity 0.3s; }
+    .breath-card.dimmed { opacity: 0.35; pointer-events: none; }
 
     /* Connect button */
     .connect-btn {
@@ -444,7 +444,7 @@
         </div>
       </div>
 
-      <!-- Brightness -->
+      <!-- Brightness (peak) -->
       <div class="card">
         <div class="card-label">Brightness</div>
         <div class="slider-row">
@@ -457,15 +457,29 @@
         </div>
       </div>
 
+      <!-- Minimum brightness (breath floor) — only affects Breathing, so it
+           dims out in Solid mode. Kept at or below the peak Brightness. -->
+      <div class="card breath-card" id="minCard">
+        <div class="card-label">Minimum brightness</div>
+        <div class="slider-row">
+          <div class="slider-header">
+            <span class="slider-name">Floor</span>
+            <span class="slider-value" id="minVal">0%</span>
+          </div>
+          <input type="range" id="minSlider" min="0" max="100" value="0"
+                 aria-label="Minimum brightness">
+        </div>
+      </div>
+
       <!-- Breathing speed -->
-      <div class="card speed-card" id="speedCard">
+      <div class="card breath-card" id="speedCard">
         <div class="card-label">Breath speed</div>
         <div class="slider-row">
           <div class="slider-header">
             <span class="slider-name">Cycle</span>
             <span class="slider-value" id="speedVal">20.0 s</span>
           </div>
-          <input type="range" id="speedSlider" min="0" max="100" value="0"
+          <input type="range" id="speedSlider" min="0" max="100" value="69"
                  aria-label="Breathing speed">
         </div>
       </div>
@@ -478,7 +492,7 @@
 <script>
 // ── App version ────────────────────────────────────────────────
 // Bump this on every change you want to be able to identify at runtime.
-var APP_VERSION = 'v0.11.3';
+var APP_VERSION = 'v0.11.4';
 
 // ── BLE UUIDs ──────────────────────────────────────────────────
 // Custom command service + characteristic (must match the firmware).
@@ -503,9 +517,21 @@ var state = {
   on:          true,
   mode:        'breathing',
   brightness:  0.40,
-  breathNorm:  0,
+  floor:       0,      // minimum brightness during breathing (0..1, <= peak)
+  breathNorm:  0.69,   // ~20s cycle default (see BREATH_* mapping below)
   sleepOn:     false,
 };
+
+// ── Breath-speed mapping ───────────────────────────────────────
+// Must match the firmware's normToHz(): the normalized 0..1 slider maps
+// linearly in CYCLE LENGTH so it feels even across the wide range.
+//   norm 0 -> slowest (BREATH_MAX_S),  norm 1 -> fastest (BREATH_MIN_S).
+var BREATH_MIN_S = 1.67;  // fastest cycle (slider max)
+var BREATH_MAX_S = 60;    // slowest cycle (slider min)
+function normToCycle(n) {
+  n = Math.max(0, Math.min(1, n));
+  return BREATH_MAX_S - n * (BREATH_MAX_S - BREATH_MIN_S);
+}
 
 var bleDevice = null, bleServer = null, bleCmdChar = null;
 
@@ -779,6 +805,7 @@ function syncAll() {
   // commands apply cleanly without briefly forcing breathing in solid mode.
   send({ cmd: 'mode',        value: state.on ? state.mode : 'off' });
   send({ cmd: 'brightness',  value: state.brightness });
+  send({ cmd: 'minBright',   value: state.floor });
   send({ cmd: 'breathSpeed', value: state.breathNorm });
   send({ cmd: 'sleep',       value: state.sleepOn });
 }
@@ -799,7 +826,9 @@ function setMode(m) {
   state.mode = m;
   document.getElementById('modeBreathing').classList.toggle('active', m === 'breathing');
   document.getElementById('modeSolid').classList.toggle('active',     m === 'solid');
+  // Minimum + Breath speed only affect breathing, so dim them in Solid mode.
   document.getElementById('speedCard').classList.toggle('dimmed', m === 'solid');
+  document.getElementById('minCard').classList.toggle('dimmed',   m === 'solid');
   updateBodyClass();
   if (state.on) send({ cmd: 'mode', value: m });
 }
@@ -812,21 +841,40 @@ brightnessSlider.addEventListener('input', function() {
   document.getElementById('brightnessVal').textContent = pct + '%';
   updateTrack(this);
   if (state.connected) send({ cmd: 'brightness', value: state.brightness });
+  // Keep the floor at or below the peak: if lowering Brightness drops it under
+  // the current Minimum, pull the Minimum down with it.
+  if (state.floor > state.brightness) setFloorPct(pct, true);
+});
+
+// ── Minimum brightness (breath floor) slider ───────────────────
+var minSlider = document.getElementById('minSlider');
+// Central setter so the brightness handler can also drive it. `send` = whether
+// to push the value to the lamp.
+function setFloorPct(pct, push) {
+  var peakPct = Math.round(state.brightness * 100);
+  if (pct > peakPct) pct = peakPct;      // floor can never exceed the peak
+  if (pct < 0) pct = 0;
+  minSlider.value = pct;
+  state.floor = pct / 100;
+  document.getElementById('minVal').textContent = pct + '%';
+  updateTrack(minSlider);
+  if (push && state.connected) send({ cmd: 'minBright', value: state.floor });
+}
+minSlider.addEventListener('input', function() {
+  setFloorPct(parseInt(this.value), true);
 });
 
 // ── Speed slider ───────────────────────────────────────────────
 var speedSlider = document.getElementById('speedSlider');
-speedSlider.addEventListener('input', function() {
-  state.breathNorm = parseInt(this.value) / 100;
-  // Must match the firmware: hz = minHz + norm * (maxHz - minHz),
-  // minHz 0.05 (20.0s/cycle, slowest) to maxHz 0.6 (1.67s/cycle, fastest).
-  var hz = 0.05 + state.breathNorm * 0.55;
-  var cycle = (1 / hz).toFixed(1);
+function applySpeed(push) {
+  state.breathNorm = parseInt(speedSlider.value) / 100;
+  var cycle = normToCycle(state.breathNorm).toFixed(1); // linear-in-cycle, matches firmware
   document.getElementById('speedVal').textContent = cycle + ' s';
   document.documentElement.style.setProperty('--breath-s', cycle + 's');
-  updateTrack(this);
-  if (state.connected) send({ cmd: 'breathSpeed', value: state.breathNorm });
-});
+  updateTrack(speedSlider);
+  if (push && state.connected) send({ cmd: 'breathSpeed', value: state.breathNorm });
+}
+speedSlider.addEventListener('input', function() { applySpeed(true); });
 
 // ── Sleep toggle ───────────────────────────────────────────────
 document.getElementById('sleepToggle').addEventListener('click', function() {
@@ -855,8 +903,9 @@ function setStatus(msg) {
 // ── Init ───────────────────────────────────────────────────────
 document.getElementById('versionLine').textContent = 'App ' + APP_VERSION;
 updateTrack(brightnessSlider);
-updateTrack(speedSlider);
 setMode('breathing');
+applySpeed(false);                 // render the ~20s default cycle + --breath-s
+setFloorPct(parseInt(minSlider.value), false); // render the floor (0% default)
 // Reflect the default ON state in the Power toggle + ambient glow so the UI
 // matches the lamp (and the mode command syncAll will send) before connecting.
 document.getElementById('powerToggle').classList.toggle('on', state.on);
